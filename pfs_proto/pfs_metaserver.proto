@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+// Proto file for metaserver-client connections
+
+package pfsmeta;
+
+service exampleservice {
+    rpc ConnectTest (exampledata) returns (retdata) {}
+}
+
+message exampledata {
+    int32 aaa = 1;
+    int32 bbb = 2;
+    int32 ccc = 3;
+}
+
+message retdata {
+    int32 ddd = 1;
+}

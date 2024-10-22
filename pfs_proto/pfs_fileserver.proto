@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+// Proto file for fileserver-client connections
+
+package pfsfile;
+
+service myservice {
+    rpc ConnectTest (something) returns (ack) {}
+}
+
+message something {
+    int32 aaa = 1;
+    int32 bbb = 2;
+    bytes data = 3;
+}
+
+message ack {
+    int32 val = 1;
+}
