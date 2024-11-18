@@ -61,6 +61,7 @@ message StreamRequest {
    int32 start_offset = 3;
     int32 end_offset = 4;
     bool is_write = 5;
+    string action = 6; 
 }
 
 message StreamResponse {

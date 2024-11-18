@@ -51,6 +51,8 @@ void client1_scenario() {
     }
     printf("Client 1: Wrote 100 bytes to 'pfs_file1'\n");
 
+    pfs_finish(1);
+
     // if (pfs_print_meta(pfs_fd, client_id) == -1) {
     //     fprintf(stderr, "Client 1: Failed to print metadata.\n");
     //     return;
@@ -103,6 +105,8 @@ void client2_scenario() {
     //     fprintf(stderr, "Client 2: Failed to finish PFS.\n");
     //     return;
     // }
+    
+    pfs_finish(2);
     printf("Client 2: Finished execution.\n");
 }
 
@@ -120,6 +124,7 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Invalid argument. Use 'client1' or 'client2'.\n");
         return -1;
     }
+    sleep(200);
 
     return 0;
 }
