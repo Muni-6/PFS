@@ -30,6 +30,12 @@ service MetaServer {
 
     rpc ClientStream (stream StreamRequest) returns (stream StreamResponse);
 
+    rpc RequestToken(TokenRequest) returns (TokenResponse);
+
+    rpc GetAllTokens(GetAllTokensRequest) returns (GetAllTokensResponse);
+
+    rpc CloseFile(CloseFileRequest) returns (CloseFileResponse);
+
    // rpc TokenStream(stream TokenMessage) returns (stream TokenMessage);
 
     //rpc NotifyWriteStatus(WriteStatus) returns (StatusResponse);
@@ -44,6 +50,26 @@ message AliveRequestMeta {
 message AliveResponseMeta {
     bool alive = 1;
     string server_message = 2;
+}
+
+message TokenRequest{
+    int32 client_id = 1;
+    int32 file_descriptor = 2;
+    int32 start_offset = 3;
+    int32 end_offset = 4;
+    bool is_write = 5;
+}
+
+message GetAllTokensRequest{
+
+}
+
+message GetAllTokensResponse {
+    repeated TokenRequest tokens = 1;
+}
+message TokenResponse{
+    int32 client_id = 1;
+    bool success = 2;
 }
 
 message RegisterClientRequest{
@@ -62,6 +88,7 @@ message StreamRequest {
     int32 end_offset = 4;
     bool is_write = 5;
     string action = 6; 
+    string request_id = 7;
 }
 
 message StreamResponse {
@@ -71,12 +98,12 @@ message StreamResponse {
     int32 start_offset = 4;
     int32 end_offset = 5;
     bool is_write = 6;
+    string request_id = 7;
 }
 
 message CreateFileRequest {
     string filename = 1;
     int32 stripe_width = 2;
-    int32 stripe_blocks = 3;
 }
 
 // Response for CreateFile
@@ -126,7 +153,7 @@ message FetchMetadataResponse {
 message UpdateMetadataRequest {
     int32 file_descriptor = 1;
     int32 new_file_size = 2;
-    int32 modification_time = 3;
+    //int32 modification_time = 3;
 }
 
 // Response for UpdateMetadata
@@ -161,4 +188,13 @@ message FetchExecStatsResponse {
     int32 total_data_written = 6;
     bool success = 7;
     string error_message = 8;
+}
+
+message CloseFileRequest {
+    int32 file_descriptor = 1; // The file descriptor to close
+}
+
+message CloseFileResponse {
+    bool success = 1;          // Success status
+    string error_message = 2;  // Error message in case of failure
 }

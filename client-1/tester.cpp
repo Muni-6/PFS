@@ -22,35 +22,42 @@ int pfs_print_meta(int pfs_fd, int client_id) {
 }
 
 // Client 1 creates a file and writes to it
+// Client 1 creates a file and writes to it
 void client1_scenario() {
     printf("Client 1: Initializing PFS client\n");
     int client_id = pfs_initialize();
     if (client_id == -1) {
         fprintf(stderr, "Client 1: Failed to initialize PFS.\n");
-        return;
+        return ;
     }
 
     // Create a file with 100 bytes
     if (pfs_create("pfs_file1", 1) == -1) {
         fprintf(stderr, "Client 1: Failed to create file.\n");
-        return;
+        return ;
     }
     printf("Client 1: Created file 'pfs_file1'\n");
 
-    // int pfs_fd = pfs_open("pfs_file1", 2);
-    // if (pfs_fd == -1) {
-    //     fprintf(stderr, "Client 1: Failed to open file.\n");
-    //     return;
+    int pfs_fd = pfs_open("pfs_file1", 2);
+    if (pfs_fd == -1) {
+        fprintf(stderr, "Client 1: Failed to open file.\n");
+        return ;
+    }
+
+    // int pfs_fd1 = pfs_open("pfs_file1", 2);
+    // if (pfs_fd1 == -1) {
+    //     fprintf(stderr, "Client 1: Failed to open file -Duplicate Open.\n");
+    //     return ;
     // }
 
     char buffer[100];
     memset(buffer, 'A', 100); // Fill with dummy data
-    if (pfs_write(1, buffer, 100, 0) == -1) {
+    if (pfs_write(pfs_fd, buffer, 100, 0) == -1) {
         fprintf(stderr, "Client 1: Failed to write to file.\n");
-        return;
+        return ;
     }
-    printf("Client 1: Wrote 100 bytes to 'pfs_file1'\n");
-
+    // printf("Client 1: Wrote 100 bytes to 'pfs_file1'\n");
+    sleep(20);
     pfs_finish(1);
 
     // if (pfs_print_meta(pfs_fd, client_id) == -1) {
@@ -58,18 +65,18 @@ void client1_scenario() {
     //     return;
     // }
 
-    // if (pfs_close(pfs_fd) == -1) {
-    //     fprintf(stderr, "Client 1: Failed to close file.\n");
-    //     return;
-    // }
+    if (pfs_close(pfs_fd) == -1) {
+        fprintf(stderr, "Client 1: Failed to close file.\n");
+        return;
+    }
     // if (pfs_finish(client_id) == -1) {
     //     fprintf(stderr, "Client 1: Failed to finish PFS.\n");
     //     return;
     // }
-    printf("Client 1: Finished execution.\n");
+    // printf("Client 1: Finished execution.\n");
+    
 }
-
-// Client 2 requests a write token for a range
+// Client 2 writes to a range overlapping with Client 1
 void client2_scenario() {
     printf("Client 2: Initializing PFS client\n");
     int client_id = pfs_initialize();
@@ -78,53 +85,281 @@ void client2_scenario() {
         return;
     }
 
-    // int pfs_fd = pfs_open("pfs_file1", 2);
-    // if (pfs_fd == -1) {
-    //     fprintf(stderr, "Client 2: Failed to open file.\n");
+    // Create a file with 100 bytes
+    // if (pfs_create("pfs_file1", 1) == -1) {
+    //     fprintf(stderr, "Client 1: Failed to create file.\n");
     //     return;
     // }
+    // printf("Client 1: Created file 'pfs_file1'\n");
 
-    char buffer[25];
-    memset(buffer, 'B', 25); // Fill with dummy data
-    if (pfs_write(1, buffer, 25, 25) == -1) {
-        fprintf(stderr, "Client 2: Failed to write to file.\n");
+    int pfs_fd = pfs_open("pfs_file1", 1);
+    if (pfs_fd == -1) {
+        fprintf(stderr, "Client 2: Failed to open file.\n");
         return;
     }
-    printf("Client 2: Wrote 25 bytes to 'pfs_file1' at offset 25\n");
+
+   char buffer[50];
+    // memset(buffer, 'B', 50);// Fill with dummy data
+    if (pfs_read(pfs_fd, buffer, 50, 25) == -1) {
+        fprintf(stderr, "Client 1: Failed to write to file.\n");
+        return;
+    }
+    else{
+        //  std::cout << "Debug: Read buffer size is " << write_size << " bytes." << std::endl;
+            std::cout << "Debug: First 100 bytes of read buffer: " 
+                    << std::string(buffer, std::min(static_cast<size_t>(100), static_cast<size_t>(50))) << std::endl;
+
+    }
+
+
+    // printf("Client 1: Wrote 100 bytes to 'pfs_file1'\n");
+    sleep(20);
+    pfs_finish(1);
 
     // if (pfs_print_meta(pfs_fd, client_id) == -1) {
-    //     fprintf(stderr, "Client 2: Failed to print metadata.\n");
+    //     fprintf(stderr, "Client 1: Failed to print metadata.\n");
     //     return;
     // }
 
-    // if (pfs_close(pfs_fd) == -1) {
-    //     fprintf(stderr, "Client 2: Failed to close file.\n");
-    //     return;
-    // }
+    if (pfs_close(pfs_fd) == -1) {
+        fprintf(stderr, "Client 1: Failed to close file.\n");
+        return;
+    }
     // if (pfs_finish(client_id) == -1) {
-    //     fprintf(stderr, "Client 2: Failed to finish PFS.\n");
+    //     fprintf(stderr, "Client 1: Failed to finish PFS.\n");
     //     return;
     // }
+    // printf("Client 1: Finished execution.\n");
+}
+
+// Client 3 reads a range overlapping with Client 2's write
+void client3_scenario() {
+     printf("Client 1: Initializing PFS client\n");
+    int client_id = pfs_initialize();
+    if (client_id == -1) {
+        fprintf(stderr, "Client 1: Failed to initialize PFS.\n");
+        return;
+    }
+
+    // Create a file with 100 bytes
+    // if (pfs_create("pfs_file1", 1) == -1) {
+    //     fprintf(stderr, "Client 1: Failed to create file.\n");
+    //     return;
+    // }
+    printf("Client 3: Created file 'pfs_file1'\n");
+
+    int pfs_fd = pfs_open("pfs_file1", 1);
+    if (pfs_fd == -1) {
+        fprintf(stderr, "Client 1: Failed to open file.\n");
+        return;
+    }
+
+    char buffer[30];
+    if (pfs_read(pfs_fd, buffer, 30, 60) == -1) {
+        fprintf(stderr, "Client 3: Failed to read from file.\n");
+        return;
+    }
+    else{
+        std::cout << "Debug: First 100 bytes of read buffer: " 
+                    << std::string(buffer, std::min(static_cast<size_t>(100), static_cast<size_t>(30))) << std::endl;
+    }
+    // printf("Client 1: Wrote 100 bytes to 'pfs_file1'\n");
+    sleep(20);
+    pfs_finish(1);
+
+    // if (pfs_print_meta(pfs_fd, client_id) == -1) {
+    //     fprintf(stderr, "Client 1: Failed to print metadata.\n");
+    //     return;
+    // }
+
+    if (pfs_close(pfs_fd) == -1) {
+        fprintf(stderr, "Client 1: Failed to close file.\n");
+        return;
+    }
+    // if (pfs_finish(client_id) == -1) {
+    //     fprintf(stderr, "Client 1: Failed to finish PFS.\n");
+    //     return;
+    // }
+    // printf("Client 1: Finished execution.\n");
+}
+
+// Client 4 reads a non-overlapping range
+void client4_scenario() {
+     printf("Client 1: Initializing PFS client\n");
+    int client_id = pfs_initialize();
+    if (client_id == -1) {
+        fprintf(stderr, "Client 1: Failed to initialize PFS.\n");
+        return;
+    }
+
+    // // Create a file with 100 bytes
+    // if (pfs_create("pfs_file1", 1) == -1) {
+    //     fprintf(stderr, "Client 1: Failed to create file.\n");
+    //     return;
+    // }
+    // printf("Client 1: Created file 'pfs_file1'\n");
+
+    int pfs_fd = pfs_open("pfs_file1", 2);
+    if (pfs_fd == -1) {
+        fprintf(stderr, "Client 1: Failed to open file.\n");
+        return;
+    }
+
+    char buffer[120];
+    memset(buffer, 'C', 120);
+    if (pfs_write(pfs_fd, buffer, 120, 20) == -1) {
+        fprintf(stderr, "Client 4: Failed to write to file.\n");
+        return;
+    }
+    // printf("Client 1: Wrote 100 bytes to 'pfs_file1'\n");
+    sleep(20);
+    pfs_finish(1);
+
+    // if (pfs_print_meta(pfs_fd, client_id) == -1) {
+    //     fprintf(stderr, "Client 1: Failed to print metadata.\n");
+    //     return;
+    // }
+
+    if (pfs_close(pfs_fd) == -1) {
+        fprintf(stderr, "Client 1: Failed to close file.\n");
+        return;
+    }
+    // if (pfs_finish(client_id) == -1) {
+    //     fprintf(stderr, "Client 1: Failed to finish PFS.\n");
+    //     return;
+    // }
+    // printf("Client 1: Finished execution.\n");
+}
+
+// Client 5 writes to a non-overlapping range
+void client5_scenario() {
+    printf("Client 1: Initializing PFS client\n");
+    int client_id = pfs_initialize();
+    if (client_id == -1) {
+        fprintf(stderr, "Client 1: Failed to initialize PFS.\n");
+        return;
+    }
+
+    // Create a file with 100 bytes
+    // if (pfs_create("pfs_file1", 1) == -1) {
+    //     fprintf(stderr, "Client 1: Failed to create file.\n");
+    //     return;
+    // }
+    // printf("Client 1: Created file 'pfs_file1'\n");
+
+    int pfs_fd = pfs_open("pfs_file1", 2);
+    if (pfs_fd == -1) {
+        fprintf(stderr, "Client 1: Failed to open file.\n");
+        return;
+    }
+
+    char buffer[30];
+    memset(buffer, 'E', 30); // Fill with dummy data
+    if (pfs_write(pfs_fd, buffer, 30, 140) == -1) {
+        fprintf(stderr, "Client 5: Failed to write to file.\n");
+        return;
+    }
+    // printf("Client 1: Wrote 100 bytes to 'pfs_file1'\n");
+    sleep(20);
+    pfs_finish(1);
+
+    // if (pfs_print_meta(pfs_fd, client_id) == -1) {
+    //     fprintf(stderr, "Client 1: Failed to print metadata.\n");
+    //     return;
+    // }
+
+    if (pfs_close(pfs_fd) == -1) {
+        fprintf(stderr, "Client 1: Failed to close file.\n");
+        return;
+    }
+    // if (pfs_finish(client_id) == -1) {
+    //     fprintf(stderr, "Client 1: Failed to finish PFS.\n");
+    //     return;
+    // }
+    // printf("Client 1: Finished execution.\n");
+}
+
+// Client 6 writes to an overlapping range with multiple clients
+void client6_scenario() {
+     printf("Client 1: Initializing PFS client\n");
+    int client_id = pfs_initialize();
+    if (client_id == -1) {
+        fprintf(stderr, "Client 1: Failed to initialize PFS.\n");
+        return;
+    }
+
+    // Create a file with 100 bytes
+    // if (pfs_create("pfs_file1", 1) == -1) {
+    //     fprintf(stderr, "Client 1: Failed to create file.\n");
+    //     return;
+    // }
+    // printf("Client 1: Created file 'pfs_file1'\n");
+
+    int pfs_fd = pfs_open("pfs_file1", 1);
+    if (pfs_fd == -1) {
+        fprintf(stderr, "Client 1: Failed to open file.\n");
+        return;
+    }
+
+    char buffer[80];
+    // memset(buffer, 'F', 80); // Fill with dummy data
+    if (pfs_read(pfs_fd, buffer, 80, 30) == -1) {
+        fprintf(stderr, "Client 6: Failed to write to file.\n");
+        return;
+    } else{
+        std::cout << "Debug: First 100 bytes of read buffer: " 
+                    << std::string(buffer, std::min(static_cast<size_t>(100), static_cast<size_t>(80))) << std::endl;
+    }
+    // printf("Client 1: Wrote 100 bytes to 'pfs_file1'\n");
+    sleep(20);
+    pfs_finish(1);
+
+    // if (pfs_print_meta(pfs_fd, client_id) == -1) {
+    //     fprintf(stderr, "Client 1: Failed to print metadata.\n");
+    //     return;
+    // }
+    if (pfs_close(pfs_fd) == -1) {
+        fprintf(stderr, "Client 1: Failed to close file.\n");
+        return;
+    }
     
-    pfs_finish(2);
-    printf("Client 2: Finished execution.\n");
+    // if (pfs_finish(client_id) == -1) {
+    //     fprintf(stderr, "Client 1: Failed to finish PFS.\n");
+    //     return;
+    // }
+    // printf("Client 1: Finished execution.\n");
+}
+
+void client7_scenario() {
+    std::cout<<"In the tester"<<std::endl;
+    pfs_printAllTokensFromServer();
 }
 
 int main(int argc, char *argv[]) {
     if (argc < 2) {
-        fprintf(stderr, "Usage: %s client1|client2\n", argv[0]);
+        fprintf(stderr, "Usage: %s client1|client2|client3|client4|client5|client6\n", argv[0]);
         return -1;
     }
+    
 
     if (strcmp(argv[1], "client1") == 0) {
-        client1_scenario();
+       client1_scenario();
     } else if (strcmp(argv[1], "client2") == 0) {
         client2_scenario();
-    } else {
-        fprintf(stderr, "Invalid argument. Use 'client1' or 'client2'.\n");
-        return -1;
+    } else if (strcmp(argv[1], "client3") == 0) {
+        client3_scenario();
+    } else if (strcmp(argv[1], "client4") == 0) {
+        client4_scenario();
+    } else if (strcmp(argv[1], "client5") == 0) {
+        client5_scenario();
+    } else if (strcmp(argv[1], "client6") == 0) {
+        client6_scenario();
     }
-    sleep(200);
+    else {
+       client7_scenario();
+    }
+
+    sleep(20000);
 
     return 0;
 }

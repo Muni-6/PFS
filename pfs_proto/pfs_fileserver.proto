@@ -17,6 +17,8 @@ service FileServer {
     rpc GetChunkInfo(GetChunkInfoRequest) returns (GetChunkInfoResponse);
 
     rpc CheckAliveServer(AliveRequest) returns (AliveResponse);
+
+    rpc GetFileInfo(GetChunkInfoRequest) returns (GetChunkInfoResponse);
 }
 
 // Message definitions
