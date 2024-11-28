@@ -58,3 +58,6 @@ int pfs_close(int fd);
 int pfs_delete(const char *filename);
 int pfs_fstat(int fd, struct pfs_metadata *meta_data);
 int pfs_execstat(struct pfs_execstat *execstat_data);
+int pfs_printAllTokensFromServer();
+int pfs_doTheWrite(int fd, void *buf, size_t num_bytes, off_t offset);
+int pfs_doTheRead(int fd, void *buf, size_t num_bytes, off_t offset);

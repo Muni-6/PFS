@@ -1,19 +1,80 @@
 syntax = "proto3";
 
-// Proto file for fileserver-client connections
+package pfs;
 
-package pfsfile;
+// Service definition for the PFS file server
+service FileServer {
+    // RPC to read a chunk of data from the file server
+    rpc ReadChunk(ReadChunkRequest) returns (ReadChunkResponse);
 
-service myservice {
-    rpc ConnectTest (something) returns (ack) {}
+    // RPC to write a chunk of data to the file server
+    rpc WriteChunk(WriteChunkRequest) returns (WriteChunkResponse);
+
+    // RPC to delete a file chunk from the file server
+    rpc DeleteChunk(DeleteChunkRequest) returns (DeleteChunkResponse);
+
+    // RPC to get information about a file chunk
+    rpc GetChunkInfo(GetChunkInfoRequest) returns (GetChunkInfoResponse);
+
+    rpc CheckAliveServer(AliveRequest) returns (AliveResponse);
+
+    rpc GetFileInfo(GetChunkInfoRequest) returns (GetChunkInfoResponse);
 }
 
-message something {
-    int32 aaa = 1;
-    int32 bbb = 2;
-    bytes data = 3;
+// Message definitions
+// Request to read a chunk of data
+message AliveRequest {
 }
 
-message ack {
-    int32 val = 1;
+message AliveResponse {
+    bool alive = 1;
+    string server_message = 2;
+}
+message ReadChunkRequest {
+    string filename = 1;       // The name of the file
+    int64 offset = 2;          // The offset in the file to start reading from
+    int64 num_bytes = 3;       // The number of bytes to read
+}
+
+// Response for ReadChunk
+message ReadChunkResponse {
+    bytes data = 1;            // The data read from the file chunk
+    bool success = 2;
+    string error_message = 3;
+}
+
+// Request to write a chunk of data
+message WriteChunkRequest {
+    string filename = 1;       // The name of the file
+    int64 offset = 2;          // The offset in the file to start writing at
+    bytes data = 3;            // The data to be written
+}
+// Response for WriteChunk
+message WriteChunkResponse {
+    int64 bytes_written = 1;   // The number of bytes successfully written
+    bool success = 2;
+    string error_message = 3;
+}
+
+// Request to delete a file chunk
+message DeleteChunkRequest {
+    string filename = 1;       // The name of the file to be deleted
+}
+
+// Response for DeleteChunk
+message DeleteChunkResponse {
+    bool success = 1;
+    string error_message = 2;
+}
+
+// Request to get information about a file chunk
+message GetChunkInfoRequest {
+    string filename = 1;       // The name of the file
+}
+
+// Response for GetChunkInfo
+message GetChunkInfoResponse {
+    int64 file_size = 1;       // The size of the file chunk
+    bool success = 2;
+    string error_message = 3;
 }

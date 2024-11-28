@@ -1,19 +1,200 @@
 syntax = "proto3";
 
-// Proto file for metaserver-client connections
+package pfs;
 
-package pfsmeta;
+// Service definition for the metadata server
+service MetaServer {
+    // RPC to create a new file
+    rpc CreateFile(CreateFileRequest) returns (CreateFileResponse);
 
-service exampleservice {
-    rpc ConnectTest (exampledata) returns (retdata) {}
+    // RPC to open an existing file
+    rpc OpenFile(OpenFileRequest) returns (OpenFileResponse);
+
+    // RPC to fetch file metadata
+    rpc FetchMetadata(FetchMetadataRequest) returns (FetchMetadataResponse);
+
+    // RPC to update file metadata (e.g., on write or close)
+    rpc UpdateMetadata(UpdateMetadataRequest) returns (UpdateMetadataResponse);
+
+    // RPC to delete a file
+    rpc DeleteFile(DeleteFileRequest) returns (DeleteFileResponse);
+
+    // RPC to fetch execution statistics
+    rpc FetchExecStats(FetchExecStatsRequest) returns (FetchExecStatsResponse);
+
+    //RPC to check if teh metaserver is alive
+    rpc CheckAliveMetaServer(AliveRequestMeta) returns (AliveResponseMeta);
+
+    //RPC to register client
+    rpc RegisterClient(RegisterClientRequest) returns (RegisterClientResponse); 
+
+    rpc ClientStream (stream StreamRequest) returns (stream StreamResponse);
+
+    rpc RequestToken(TokenRequest) returns (TokenResponse);
+
+    rpc GetAllTokens(GetAllTokensRequest) returns (GetAllTokensResponse);
+
+    rpc CloseFile(CloseFileRequest) returns (CloseFileResponse);
+
+   // rpc TokenStream(stream TokenMessage) returns (stream TokenMessage);
+
+    //rpc NotifyWriteStatus(WriteStatus) returns (StatusResponse);
 }
 
-message exampledata {
-    int32 aaa = 1;
-    int32 bbb = 2;
-    int32 ccc = 3;
+
+// Message definitions
+// Request to create a new file
+message AliveRequestMeta {
 }
 
-message retdata {
-    int32 ddd = 1;
+message AliveResponseMeta {
+    bool alive = 1;
+    string server_message = 2;
+}
+
+message TokenRequest{
+    int32 client_id = 1;
+    int32 file_descriptor = 2;
+    int32 start_offset = 3;
+    int32 end_offset = 4;
+    bool is_write = 5;
+}
+
+message GetAllTokensRequest{
+
+}
+
+message GetAllTokensResponse {
+    repeated TokenRequest tokens = 1;
+}
+message TokenResponse{
+    int32 client_id = 1;
+    bool success = 2;
+}
+
+message RegisterClientRequest{
+    string hostname = 1;
+}
+
+message RegisterClientResponse{
+    int32 client_id = 1;
+    bool success = 2;
+}
+
+message StreamRequest {
+    int32 client_id = 1;
+    int32 file_descriptor = 2;
+   int32 start_offset = 3;
+    int32 end_offset = 4;
+    bool is_write = 5;
+    string action = 6; 
+    string request_id = 7;
+}
+
+message StreamResponse {
+    string action = 1;  // "grant" or "invalidate"
+    string filename = 2;
+    int32 file_descriptor = 3;
+    int32 start_offset = 4;
+    int32 end_offset = 5;
+    bool is_write = 6;
+    string request_id = 7;
+}
+
+message CreateFileRequest {
+    string filename = 1;
+    int32 stripe_width = 2;
+}
+
+// Response for CreateFile
+message CreateFileResponse {
+    bool success = 1;
+    string error_message = 2;
+}
+
+
+message StatusResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+// Request to open a file
+message OpenFileRequest {
+    string filename = 1;
+   int32 mode = 2; // 1 for read, 2 for read/write
+}
+
+// Response for OpenFile
+message OpenFileResponse {
+    int32 file_descriptor = 1;
+    bool success = 2;
+    string error_message = 3;
+}
+
+// Request to fetch file metadata
+message FetchMetadataRequest {
+    int32 file_descriptor = 1;
+}
+
+// Response for FetchMetadata
+message FetchMetadataResponse {
+    string filename = 1;
+    int32 file_size = 2;
+    int32 creation_time = 3;
+    int32 modification_time = 4;
+    int32 stripe_width = 5;
+    int32 stripe_blocks = 6;
+    map<int32, string> file_recipe = 7; // Map of <file_server_id, byte_range>
+    bool success = 8;
+    string error_message = 9;
+}
+
+// Request to update file metadata
+message UpdateMetadataRequest {
+    int32 file_descriptor = 1;
+    int32 new_file_size = 2;
+    //int32 modification_time = 3;
+}
+
+// Response for UpdateMetadata
+message UpdateMetadataResponse {
+    bool success = 1;
+    string error_message = 2;
+}
+
+// Request to delete a file
+message DeleteFileRequest {
+    string filename = 1;
+}
+
+// Response for DeleteFile
+message DeleteFileResponse {
+    bool success = 1;
+    string error_message = 2;
+}
+
+// Request to fetch execution statistics
+message FetchExecStatsRequest {
+    int32 client_id = 1;
+}
+
+// Response for FetchExecStats
+message FetchExecStatsResponse {
+    int32 num_reads = 1;
+    int32 num_writes = 2;
+    int32 num_open_files = 3;
+    int32 num_closed_files = 4;
+    int32 total_data_read = 5;
+    int32 total_data_written = 6;
+    bool success = 7;
+    string error_message = 8;
+}
+
+message CloseFileRequest {
+    int32 file_descriptor = 1; // The file descriptor to close
+}
+
+message CloseFileResponse {
+    bool success = 1;          // Success status
+    string error_message = 2;  // Error message in case of failure
 }
