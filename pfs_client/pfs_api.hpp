@@ -21,7 +21,7 @@
 
 struct pfs_filerecipe {
     int stripe_width;
-
+    
     // Additional...
 
 };

@@ -93,6 +93,7 @@ void client2_scenario() {
     // printf("Client 1: Created file 'pfs_file1'\n");
 
     int pfs_fd = pfs_open("pfs_file1", 1);
+    int copy=pfs_fd;
     if (pfs_fd == -1) {
         fprintf(stderr, "Client 2: Failed to open file.\n");
         return;
@@ -114,14 +115,14 @@ void client2_scenario() {
 
     // printf("Client 1: Wrote 100 bytes to 'pfs_file1'\n");
     sleep(20);
-    pfs_finish(1);
+    // pfs_finish(1);
 
     // if (pfs_print_meta(pfs_fd, client_id) == -1) {
     //     fprintf(stderr, "Client 1: Failed to print metadata.\n");
     //     return;
     // }
 
-    if (pfs_close(pfs_fd) == -1) {
+    if (pfs_close(2) == -1) { 
         fprintf(stderr, "Client 1: Failed to close file.\n");
         return;
     }
