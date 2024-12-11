@@ -35,16 +35,19 @@ std::unordered_map<int, std::string> fd_to_filename;
 std::unordered_map<std::string, int> filename_to_fd;
 std::unordered_map<int, int> file_mode;
 std::unordered_map<std::string, std::unordered_map<int32_t, BlockCacheInfo>> block_cache_status;
+std::thread reader_thread;
 // Can make the call as writeBlockToServer(const char *filename, int block_num, const void *block_data)
-int readBlockFromServer(const char *filename, int block_num, void *read_buf)
+int readBlockFromServer(const char *filename, int block_num, void *read_buf, int offset, int bytes_to_read)
 {
     // if (fileStripeWidths.find(filename) == fileStripeWidths.end()) {
     //     std::cerr << "Error: Filename " << filename << " not found in stripe widths map." << std::endl;
     //     return -1;
     // }
+    std::cout << "No. of bytes_to_read " << bytes_to_read << " from the offset " << offset << std::endl;
 
     int stripe_width = metadataMap[filename].recipe.stripe_width;
-    if (stripe_width <= 0) {
+    if (stripe_width <= 0)
+    {
         std::cerr << "Error: Invalid stripe width for file " << filename << ": " << stripe_width << std::endl;
         return -1;
     }
@@ -86,14 +89,15 @@ int readBlockFromServer(const char *filename, int block_num, void *read_buf)
 
     // Copy the data to the provided buffer
     std::string chunk_data = response.data();
-    memcpy(read_buf, chunk_data.data(), chunk_data.size());
+    memcpy(read_buf, chunk_data.data() + offset, bytes_to_read);
 
     std::cout << "Successfully read " << chunk_data.size()
               << " bytes from block " << block_num
               << " on server " << server_index << std::endl;
 
-    return chunk_data.size(); // Return the number of bytes read
+    return bytes_to_read; // Return the number of bytes read
 }
+
 int writeBlockToServer(const char *filename, int block_num, const void *block_data)
 {
     // Determine the server index based on block number
@@ -140,7 +144,7 @@ int writeBlockToServer(const char *filename, int block_num, const void *block_da
 int fetchAndCacheBlock(const std::string &filename, int32_t block_num,
                        void *buf, size_t offset, size_t num_bytes)
 {
-     std::cout << "fetchAndCacheBlock called with filename: " << filename
+    std::cout << "fetchAndCacheBlock called with filename: " << filename
               << ", block_num: " << block_num
               << ", offset: " << offset
               << ", num_bytes: " << num_bytes << std::endl;
@@ -149,15 +153,15 @@ int fetchAndCacheBlock(const std::string &filename, int32_t block_num,
 
     // Read entire block from server
     std::cout << "Allocating buffer of size: " << PFS_BLOCK_SIZE << std::endl;
-    int result = readBlockFromServer(filename.c_str(), block_num, block_buffer.data());
-   if (result < 0)
+    int result = readBlockFromServer(filename.c_str(), block_num, block_buffer.data(), offset, num_bytes);
+    if (result < 0)
     {
         std::fill_n(static_cast<char *>(buf), PFS_BLOCK_SIZE, 0xFF);
     }
 
     std::cout << "Block read successfully, result: " << result << std::endl;
     // Add to cache
-    client_cache->addToCache(filename, block_num, block_buffer.data(), result);
+    client_cache->addToCache(filename, block_num, block_buffer.data(), PFS_BLOCK_SIZE);
     block_cache_status[filename][block_num].is_valid = true;
 
     std::cout << "Added block to cache for filename: " << filename << ", block_num: " << block_num << std::endl;
@@ -176,27 +180,77 @@ class ClientTokenManager
 private:
     std::int32_t client_id;
     std::unique_ptr<grpc::ClientContext> context_ptr;
-    std::thread reader_thread;
     std::mutex tokens_mutex;
 
-    struct TokenRange {
-        off_t start_offset;
-        off_t end_offset;
-        bool is_write;
-        std::string filename;
-        std::int32_t fd;
-        std::string status; // "active" or "completed"
-        std::mutex status_mutex;
-        std::condition_variable status_cv;
+    // struct TokenRange
+    // {
+    //     off_t start_offset;
+    //     off_t end_offset;
+    //     bool is_write;
+    //     std::string filename;
+    //     std::int32_t fd;
+    //     std::string status; // "active" or "completed"
+    //     std::mutex status_mutex;
+    //     std::condition_variable status_cv;
 
-        TokenRange(off_t start, off_t end, bool write, const std::string& file, int file_descriptor)
-            : start_offset(start),
-              end_offset(end),
-              is_write(write),
-              filename(file),
-              fd(file_descriptor),
-              status("active") {}
-    };
+    //     TokenRange(off_t start, off_t end, bool write, const std::string &file, int file_descriptor)
+    //         : start_offset(start),
+    //           end_offset(end),
+    //           is_write(write),
+    //           filename(file),
+    //           fd(file_descriptor),
+    //           status("active") {}
+    // };
+    struct TokenRange {
+    off_t start_offset;
+    off_t end_offset;
+    bool is_write;
+    std::string filename;
+    std::int32_t fd;
+    std::string status; // "active" or "completed"
+    std::mutex status_mutex;
+    std::condition_variable status_cv;
+
+    // Constructor
+    TokenRange(off_t start, off_t end, bool write, const std::string &file, int file_descriptor)
+        : start_offset(start),
+          end_offset(end),
+          is_write(write),
+          filename(file),
+          fd(file_descriptor),
+          status("active") {}
+
+    // Delete copy constructor and copy assignment operator
+    TokenRange(const TokenRange &) = delete;
+    TokenRange &operator=(const TokenRange &) = delete;
+
+    // Define move constructor
+    TokenRange(TokenRange &&other) noexcept
+        : start_offset(other.start_offset),
+          end_offset(other.end_offset),
+          is_write(other.is_write),
+          filename(std::move(other.filename)),
+          fd(other.fd),
+          status(std::move(other.status)) {
+        // No need to move `std::mutex` or `std::condition_variable` as they can't be moved.
+        // Just leave them in a valid default state.
+    }
+
+    // Define move assignment operator
+    TokenRange &operator=(TokenRange &&other) noexcept {
+        if (this != &other) {
+            start_offset = other.start_offset;
+            end_offset = other.end_offset;
+            is_write = other.is_write;
+            filename = std::move(other.filename);
+            fd = other.fd;
+            status = std::move(other.status);
+            // Similarly, leave `std::mutex` and `std::condition_variable` in a valid default state.
+        }
+        return *this;
+    }
+};
+
 
     std::list<TokenRange> held_tokens;
     // std::vector<std::unique_ptr<TokenRange>> held_tokens;
@@ -208,8 +262,8 @@ public:
     bool CompleteTokenRange(const std::string &filename, off_t start, off_t end)
     {
         std::lock_guard<std::mutex> lock(tokens_mutex);
-         std::cout << "CompleteTokenRange called for filename: " << filename
-              << ", start: " << start << ", end: " << end << std::endl;
+        std::cout << "CompleteTokenRange called for filename: " << filename
+                  << ", start: " << start << ", end: " << end << std::endl;
 
         for (auto &token : held_tokens)
         {
@@ -224,17 +278,74 @@ public:
                 return true;
             }
         }
-         std::cerr << "No token found for completion in range for " << filename << " from " << start << " to " << end << std::endl;
+        std::cerr << "No token found for completion in range for " << filename << " from " << start << " to " << end << std::endl;
         return false;
+    }
+    bool SetTokenStatus(const std::string &filename, off_t start, off_t end, const std::string &new_status)
+    {
+        std::lock_guard<std::mutex> lock(tokens_mutex);
+        for (auto &token : held_tokens)
+        {
+            if (token.filename == filename &&
+                token.start_offset <= start &&
+                token.end_offset >= end)
+            {
+                std::lock_guard<std::mutex> status_lock(token.status_mutex);
+                std::cout << "Setting token status for " << filename << " from " << start << " to " << end
+                          << " to " << new_status << std::endl;
+                token.status = new_status;
+                return true;
+            }
+        }
+        std::cerr << "No token found to update status for " << filename << " range " << start << " to " << end << std::endl;
+        return false;
+    }
+
+    void PrintConflictingTokens(const std::vector<TokenRange *> &conflicting_tokens, const std::string &filename, off_t start, off_t end)
+    {
+        if (conflicting_tokens.empty())
+        {
+            std::cout << "No conflicting tokens found for range " << start << " to " << end << " in file " << filename << "." << std::endl;
+            return;
+        }
+
+        std::cout << "Conflicting tokens for filename: " << filename << ", range: [" << start << ", " << end << "]" << std::endl;
+        for (const auto *token : conflicting_tokens)
+        {
+            std::cout << "  Token: Range [" << token->start_offset << ", " << token->end_offset << "]"
+                      << ", Status: " << token->status
+                      << ", Write Access: " << (token->is_write ? "Yes" : "No") << std::endl;
+        }
+    }
+
+    void PrintAllHeldTokens()
+    {
+        std::cout << "Printing all tokens held by the client:" << std::endl;
+
+        if (held_tokens.empty())
+        {
+            std::cout << "No tokens held by the client." << std::endl;
+            return;
+        }
+
+        for (const auto &token : held_tokens)
+        {
+            std::cout << "Token for filename: " << token.filename
+                      << ", range: [" << token.start_offset << ", " << token.end_offset << "]"
+                      << ", status: " << token.status
+                      << ", is_write: " << (token.is_write ? "true" : "false") << std::endl;
+        }
     }
 
     bool WaitForConflictingTokensCompletion(const std::string &filename, off_t start, off_t end)
     {
-       // std::unique_lock<std::mutex> lock(tokens_mutex);
+        // std::unique_lock<std::mutex> lock(tokens_mutex);
 
-         std::cout << "WaitForConflictingTokensCompletion called for filename: " << filename
-              << ", start: " << start << ", end: " << end << std::endl;
-        // Find all conflicting tokens
+        std::cout << "WaitForConflictingTokensCompletion called for filename: " << filename
+                  << ", start: " << start << ", end: " << end << std::endl;
+        // to do::Print all the tokens held by the client into a function
+        //  Find all conflicting tokens
+        PrintAllHeldTokens();
         std::vector<TokenRange *> conflicting_tokens;
         for (auto &token : held_tokens)
         {
@@ -245,19 +356,20 @@ public:
             }
         }
 
+        PrintConflictingTokens(conflicting_tokens, filename, start, end);
+
         if (conflicting_tokens.empty())
         {
-             std::cout << "No conflicting tokens found for range " << start << " to " << end << std::endl;
+            std::cout << "No conflicting tokens found for range " << start << " to " << end << std::endl;
             return true;
         }
-
-        // Wait for all conflicting tokens to complete
+        //  Wait for all conflicting tokens to complete
         for (auto *token : conflicting_tokens)
         {
             std::unique_lock<std::mutex> status_lock(token->status_mutex);
             token->status_cv.wait(status_lock, [token]()
                                   { return token->status == "completed"; });
-                                  std::cout << "Conflicting token completed for " << token->filename << " from " << token->start_offset << " to " << token->end_offset << std::endl;
+            std::cout << "Conflicting token completed for " << token->filename << " from " << token->start_offset << " to " << token->end_offset << std::endl;
         }
 
         return true;
@@ -283,13 +395,45 @@ public:
                 
                 if (response.action() == "invalidate") {
                      std::cout << "Client should revoke the token from : " << response.start_offset() <<" to "<<response.end_offset()<< std::endl<< std::endl;
-                     if(!response.invalidate()){
-                        RemoveTokenRange(response.filename(), 
-                                   response.start_offset(), 
-                                   response.end_offset());  
+                     if (!response.invalidate())
+                     {
+                         std::cout << "Debug: Invalidating token range for filename: " << response.filename()
+                                   << ", start_offset: " << response.start_offset()
+                                   << ", end_offset: " << response.end_offset() << std::endl;
+
+                         RemoveTokenRange(response.filename(),
+                                          response.start_offset(),
+                                          response.end_offset(),response.mode());
+
+                         PrintAllHeldTokens();
                      }
                       std::cout << "Client revoked the token from : " << response.start_offset()<<" to "<<response.end_offset()<<" and now sending the ack to the server."<< std::endl;
-                      for (const auto &block_num : response.invalidate_blocks())
+                if(client_id == response.client_id() && !response.mode()){
+                     for (const auto &block_num : response.invalidate_blocks())
+                      {
+                          std::cout << "Processing block " << block_num << " for file: " << response.filename() << std::endl;
+
+                          auto &block_info = block_cache_status[response.filename()][block_num];
+
+                          if (block_info.is_valid)
+                          {
+                              std::cout << "Block " << block_num << " is valid in cache. Marking as dirty and writing back." << std::endl;
+                              writeBackBlock(response.filename(), block_num);
+                          }
+                          else
+                          {
+                              std::cout << "Block " << block_num << " is not valid in cache. Skipping write-back." << std::endl;
+                          }
+
+                          block_info.is_cacheable = false;
+                          block_info.is_valid = false;
+
+                          std::cout << "Removing block " << block_num << " from cache." << std::endl;
+                        //   client_cache.removeFromCache(response.filename(), block_num);
+                      }
+                }
+                if(client_id != response.client_id() || !response.mode()){
+                     for (const auto &block_num : response.invalidate_blocks())
                       {
                           std::cout << "Processing block " << block_num << " for file: " << response.filename() << std::endl;
 
@@ -312,6 +456,7 @@ public:
                           std::cout << "Removing block " << block_num << " from cache." << std::endl;
                           client_cache.removeFromCache(response.filename(), block_num);
                       }
+                }
 
                     pfs::StreamRequest invalidate_ack;
                     invalidate_ack.set_action("invalidate_ack");
@@ -353,15 +498,15 @@ public:
 
     void writeBackBlock(const std::string &filename, int32_t block_num)
     {
-         std::cout << "writeBackBlock called for filename: " << filename
-              << ", block_num: " << block_num << std::endl;
+        std::cout << "writeBackBlock called for filename: " << filename
+                  << ", block_num: " << block_num << std::endl;
 
         // Get block data from cache
         void *block_data;
         size_t block_size;
         if (client_cache.getBlock(filename, block_num, &block_data, &block_size))
         {
-             std::cout << "Block data retrieved from cache for " << filename << ", block_num: " << block_num << std::endl;
+            std::cout << "Block data retrieved from cache for " << filename << ", block_num: " << block_num << std::endl;
             // Write back to server
             writeBlockToServer(filename.c_str(), block_num, block_data);
             std::cout << "Block data written back to server for " << filename << ", block_num: " << block_num << std::endl;
@@ -373,15 +518,15 @@ public:
     }
     bool HasTokenForRange(const std::int32_t &fd, off_t start, off_t end, bool write_access)
     {
-         std::cout << "HasTokenForRange called for fd: " << fd
-              << ", start: " << start << ", end: " << end
-              << ", write_access: " << write_access << std::endl;
+        std::cout << "HasTokenForRange called for fd: " << fd
+                  << ", start: " << start << ", end: " << end
+                  << ", write_access: " << write_access << std::endl;
         std::lock_guard<std::mutex> lock(tokens_mutex);
         // std::cout << "Inside HasTokenForRange " << std::endl;
         if (held_tokens.size() == 0)
         {
             // std::cout << "held_tokens size is zero " << std::endl;
-             std::cout << "held_tokens size is zero, client isn't holding any token" << std::endl;
+            std::cout << "held_tokens size is zero, client isn't holding any token" << std::endl;
             return false;
         }
         for (const auto &token : held_tokens)
@@ -392,7 +537,7 @@ public:
                 (write_access || token.is_write))
             {
                 // Need to wait for conflicting token completion
-                 std::cout << "Conflicting token found, waiting for token to complete" << std::endl;
+                std::cout << "Conflicting token found, waiting for token to complete" << std::endl;
                 return false;
             }
         }
@@ -405,83 +550,156 @@ public:
                 token.status == "active" &&
                 (write_access == token.is_write))
             {
-                 std::cout << "Token found for the requested range, returning true" << std::endl;
+                std::cout << "Token found for the requested range, returning true" << std::endl;
                 return true;
             }
         }
-         std::cout << "Client isn't holding the token, requesting for the token now" << std::endl;
+        std::cout << "Client isn't holding the token, requesting for the token now" << std::endl;
         return false;
     }
 
 private:
-    void RemoveTokenRange(const std::string &filename, off_t start, off_t end)
+    void ShrinkOrRemoveToken(const TokenRange &token, off_t start, off_t end)
     {
-         std::cout << "RemoveTokenRange called for filename: " << filename
-              << ", start: " << start << ", end: " << end << std::endl;
-        if (!WaitForConflictingTokensCompletion(filename, start, end))
-        {
-            std::cerr << "Failed waiting for conflicting tokens" << std::endl;
-            // return -1;
-        }
-        auto it = held_tokens.begin();
-        std::list<TokenRange> new_tokens;
-        while (it != held_tokens.end())
-        {
-            std::cout << "Checking token range for filename: " << it->filename
-                  << ", start_offset: " << it->start_offset
-                  << ", end_offset: " << it->end_offset << std::endl;
-            if (it->filename == filename &&
-                ((start <= it->start_offset && end >= it->start_offset) || // Overlap with start
-                 (start <= it->end_offset && end >= it->end_offset)))      // Overlap with end
-            {
-                // Check if there is a left portion that is not conflicting
-                if (start > it->start_offset)
-                {
-                    // Add the left non-conflicting portion
-                    std::cout << "Shrink of the token happened on the left side on the CLIENT SIDE " << it->start_offset << " to " << start - 1 << " with the token " << it->is_write << std::endl;
-                    new_tokens.emplace_back(it->start_offset, start - 1, it->is_write, it->filename, it->fd);
-                }
+        // Protect file_tokens if accessed concurrently
+        // std::lock_guard<std::mutex> lock(tokens_mutex);
+        auto &tokens = held_tokens;
 
-                // Check if there is a right portion that is not conflicting
-                if (end < it->end_offset)
-                {
-                    // Add the right non-conflicting portion
-                    std::cout << "Shrink of the token happened on the right side on the CLIENT SIDE " << end + 1 << " to " << it->end_offset << " with the token " << it->is_write << std::endl;
-                    new_tokens.emplace_back(end + 1, it->end_offset, it->is_write, it->filename, it->fd);
-                }
+        auto it = std::find_if(tokens.begin(), tokens.end(),
+                               [&token](const TokenRange &t)
+                               {
+                                   return t.start_offset == token.start_offset &&
+                                          t.end_offset == token.end_offset;
+                               });
 
-                // Erase the original conflicting token
-                it = held_tokens.erase(it);
-            }
-            else
-            {
-                ++it;
-            }
-            // ++it;
-        }
-        // held_tokens.insert(held_tokens.end(), new_tokens.begin(), new_tokens.end());
-        for (auto &token : new_tokens)
+        std::vector<TokenRange> new_tokens;
+
+        if (it != tokens.end())
         {
-            held_tokens.emplace_back(
-                token.start_offset,
-                token.end_offset,
-                token.is_write,
-                token.filename,
-                token.fd);
+            std::cout << "Found token: " << it->start_offset << " to " << it->end_offset << std::endl;
+
+            if (start > it->start_offset)
+            {
+                std::cout << "Shrink on left: " << it->start_offset << " to " << start - 1 << std::endl;
+                new_tokens.emplace_back(it->start_offset, start - 1, it->is_write, it->filename, it->fd);
+            }
+            if (end < it->end_offset)
+            {
+                std::cout << "Shrink on right: " << end + 1 << " to " << it->end_offset << std::endl;
+                new_tokens.emplace_back(end + 1, it->end_offset, it->is_write, it->filename, it->fd);
+            }
+
+            tokens.erase(it);
+            for (auto &token : new_tokens)
+    {
+        held_tokens.emplace_back(std::move(token));
+    }
+            std::cout << "ShrinkorRemove happened on the server side for the client and the tokens are updated " << std::endl;
         }
-        std::cout << "Token range removal completed for " << filename << " from " << start << " to " << end << std::endl;
+
+        else
+        {
+            std::cerr << "Token not found for shrinking or removing!" << std::endl;
+        }
+    }
+
+    bool TokensConflict(const TokenRange &existing, off_t start, off_t end, bool is_write)
+    {
+        if (existing.end_offset < start || existing.start_offset > end)
+        {
+            return false; // No overlap
+        }
+        std::cout << "Token conflict detected for range: " << existing.start_offset << " to " << existing.end_offset << std::endl;
+
+        // Conflict for write - write or read - write
+        return is_write || existing.is_write;
+    }
+
+    void RemoveTokenRange(const std::string &filename, off_t start, off_t end, bool is_write)
+    {
+        std::vector<TokenRange> conflicting_tokens;
+        for (const auto &token : held_tokens)
+        {
+            if (TokensConflict(token, start, end, is_write))
+            {
+                std::cout << "Checking for conflicts in tokens for filename: " << filename << std::endl;
+                conflicting_tokens.emplace_back(
+                    token.start_offset, token.end_offset, token.is_write, token.filename, token.fd);
+            }
+        }
+
+        // for (auto &token : held_tokens)
+        // {
+        //     if (token.filename == filename &&
+        //         !((start > token.end_offset) || (end < token.start_offset)))
+        //     {
+        //         conflicting_tokens.push_back(&token);
+        //     }
+        // }
+
+        std::cout << "RemoveTokenRange called for filename: " << filename
+                  << ", start: " << start << ", end: " << end << std::endl;
+
+        for (const auto &token : conflicting_tokens)
+        {
+            ShrinkOrRemoveToken(token, start, end);
+        }
+
+        // // Wait for conflicting tokens to complete
+        // if (!WaitForConflictingTokensCompletion(filename, start, end))
+        // {
+        //     std::cerr << "Failed waiting for conflicting tokens." << std::endl;
+        //     return;
+        // }
+
+        // // Iterate through the held tokens and process conflicts
+        // auto it = held_tokens.begin();
+        // std::list<TokenRange> new_tokens;
+
+        // while (it != held_tokens.end())
+        // {
+        //     std::cout << "Checking token range for filename: " << it->filename
+        //               << ", start_offset: " << it->start_offset
+        //               << ", end_offset: " << it->end_offset << std::endl;
+
+        //     if (it->filename == filename &&
+        //         ((start <= it->start_offset && end >= it->start_offset) || // Overlap with start
+        //          (start <= it->end_offset && end >= it->end_offset)))      // Overlap with end
+        //     {
+        //         HandleTokenShrinking(*it, start, end, new_tokens);
+        //         it = held_tokens.erase(it); // Erase conflicting token
+        //     }
+        //     else
+        //     {
+        //         ++it;
+        //     }
+        // }
+
+        // // Add newly created tokens to the list
+        //  for (auto &token : new_tokens)
+        // {
+        //     held_tokens.emplace_back(
+        //         token.start_offset,
+        //         token.end_offset,
+        //         token.is_write,
+        //         token.filename,
+        //         token.fd);
+        // }
+        // std::cout << "Token range removal completed for " << filename << " from " << start << " to " << end << std::endl;
+        // // held_tokens.insert(held_tokens.end(), new_tokens.begin(), new_tokens.end());
+
+        // // std::cout << "Token range removal completed for " << filename << " from " << start << " to " << end << std::endl;
     }
     void AddTokenRange(const std::string &filename, off_t start, off_t end, bool is_write, std::int32_t fd)
     {
         std::cout << "AddTokenRange called for filename: " << filename
-              << ", start: " << start << ", end: " << end
-              << ", is_write: " << is_write << ", fd: " << fd << std::endl;
+                  << ", start: " << start << ", end: " << end
+                  << ", is_write: " << is_write << ", fd: " << fd << std::endl;
         held_tokens.emplace_back(start, end, is_write, filename, fd);
 
-         std::cout << "Token added to held_tokens for filename: " << filename
-              << ", start: " << start << ", end: " << end
-              << ", is_write: " << is_write << std::endl;
-
+        std::cout << "Token added to held_tokens for filename: " << filename
+                  << ", start: " << start << ", end: " << end
+                  << ", is_write: " << is_write << std::endl;
     }
 };
 
@@ -501,7 +719,7 @@ bool RequestToken(const std::int64_t &fd, off_t start, off_t end, bool write_acc
     grpc::ClientContext context;
     pfs::TokenRequest request;
     pfs::TokenResponse response;
-    sleep(5);
+    // sleep(5);
     request.set_client_id(client_id);
     request.set_file_descriptor(fd);
     request.set_start_offset(start);
@@ -610,11 +828,11 @@ int pfs_initialize()
     client_id = RegisterClient();
     // should we create a bidirectional stream while initialization only??
 
-// Step 1: Initialize the cache first
-client_cache = std::make_unique<PFSCache>(CLIENT_CACHE_BLOCKS);
+    // Step 1: Initialize the cache first
+    client_cache = std::make_unique<PFSCache>(CLIENT_CACHE_BLOCKS);
 
-// Step 2: Use the existing cache instance to initialize the token manager
-token_manager = std::make_unique<ClientTokenManager>(client_id, std::move(token_manager_stub), *client_cache);
+    // Step 2: Use the existing cache instance to initialize the token manager
+    token_manager = std::make_unique<ClientTokenManager>(client_id, std::move(token_manager_stub), *client_cache);
 
     return client_id;
 }
@@ -679,7 +897,7 @@ int pfs_create(const char *filename, int stripe_width)
 
 int pfs_open(const char *filename, int mode)
 {
-    
+
     // Validate input
     if (filename == nullptr || strlen(filename) == 0)
     {
@@ -723,7 +941,7 @@ int pfs_open(const char *filename, int mode)
 
     // Step 3: Extract the file descriptor and other metadata
     int fd = response.file_descriptor();
-        // Step 4: Update local structures for file descriptor and metadata management
+    // Step 4: Update local structures for file descriptor and metadata management
     // fileStripeWidths[fd] = stripe_width;
     fd_to_filename[fd] = filename;
     filename_to_fd[filename] = fd;
@@ -731,13 +949,15 @@ int pfs_open(const char *filename, int mode)
     // int stripe_width = fileStripeWidths[fd];
     pfs_metadata metadata;
     int result = pfs_fstat(fd, &metadata);
-    if (result == 0) {
+    if (result == 0)
+    {
         std::cout << "Metadata fetched successfully." << std::endl;
-    } else {
+    }
+    else
+    {
         std::cerr << "Failed to fetch metadata." << std::endl;
     }
     metadataMap[filename] = metadata;
-
 
     std::cout << "File opened successfully with FD: " << fd << " in mode: " << mode << std::endl;
 
@@ -755,11 +975,11 @@ int pfs_read(int fd, void *buf, size_t num_bytes, off_t offset)
         return -1;
     }
 
-    if (file_mode[fd] != 1)
-    {
-        std::cerr << "The mode is not 'read' for file descriptor " << fd << std::endl;
-        return -1;
-    }
+    // if (file_mode[fd] != 1 || file_mode[fd] != 2)
+    // {
+    //     std::cerr << "The mode is not 'read' for file descriptor " << fd << std::endl;
+    //     return -1;
+    // }
 
     std::string filename = fd_to_filename[fd];
     std::cout << "Filename resolved for fd " << fd << ": " << filename << std::endl;
@@ -773,6 +993,11 @@ int pfs_read(int fd, void *buf, size_t num_bytes, off_t offset)
 
     if (token_manager->HasTokenForRange(fd, offset, offset + num_bytes, 0))
     {
+        if (!token_manager->SetTokenStatus(filename, offset, offset + num_bytes, "active"))
+        {
+            // If needed, handle the case where updating status fails
+            std::cerr << "Failed to set token status to 'active'." << std::endl;
+        }
         // We have the read token - check cache status for each block
         std::cout << "Read token acquired for range " << offset << " to " << offset + num_bytes << std::endl;
         for (int32_t block_num = start_block; block_num <= end_block; block_num++)
@@ -788,12 +1013,12 @@ int pfs_read(int fd, void *buf, size_t num_bytes, off_t offset)
                 PFS_BLOCK_SIZE - block_offset // Bytes till end of this block
             );
 
-             std::cout << "Block " << block_num << ": block_offset = " << block_offset
+            std::cout << "Block " << block_num << ": block_offset = " << block_offset
                       << ", bytes_this_block = " << bytes_this_block << std::endl;
 
             if (block_info.is_cacheable && block_info.is_valid)
             {
-                 std::cout << "Block " << block_num << " is cacheable and valid." << std::endl;
+                std::cout << "Block " << block_num << " is cacheable and valid." << std::endl;
                 // Block can be cached - but might not be in cache yet
                 if (!client_cache->isBlockCached(filename, block_num))
                 {
@@ -808,7 +1033,7 @@ int pfs_read(int fd, void *buf, size_t num_bytes, off_t offset)
                         return -1;
                     }
                     bytes_read += result;
-                      std::cout << "Fetched and cached block " << block_num << ", bytes_read: " << bytes_read << std::endl;
+                    std::cout << "Fetched and cached block " << block_num << ", bytes_read: " << bytes_read << std::endl;
                 }
                 else
                 {
@@ -816,14 +1041,13 @@ int pfs_read(int fd, void *buf, size_t num_bytes, off_t offset)
                     int result = client_cache->readFromCache(filename, block_num,
                                                              static_cast<char *>(buf) + bytes_read,
                                                              block_offset, bytes_this_block);
-                                                             
-                     if (result < 0)
+
+                    if (result < 0)
                     {
                         std::cerr << "Failed to read block " << block_num << " from cache" << std::endl;
                         return -1;
                     }
                     bytes_read += result;
-                    // read from the cached block
                 }
                 // At this point, block is in cache
             }
@@ -831,8 +1055,8 @@ int pfs_read(int fd, void *buf, size_t num_bytes, off_t offset)
             {
                 // If any block in range isn't cacheable, read everything directly
                 std::cout << "Some blocks not cacheable, reading directly from servers" << std::endl;
-                int result = readBlockFromServer(filename.c_str(), block_num, buf);
-                 if (result < 0)
+                int result = readBlockFromServer(filename.c_str(), block_num, static_cast<char *>(buf) + bytes_read, block_offset, bytes_this_block);
+                if (result < 0)
                 {
                     std::cerr << "Failed to read block " << block_num << " from server" << std::endl;
                     return -1;
@@ -841,6 +1065,7 @@ int pfs_read(int fd, void *buf, size_t num_bytes, off_t offset)
             }
         }
         std::cout << "Finished reading " << bytes_read << " bytes with read token." << std::endl;
+        token_manager->CompleteTokenRange(filename, offset, offset + num_bytes);
         return bytes_read;
     }
     else
@@ -868,11 +1093,11 @@ int pfs_read(int fd, void *buf, size_t num_bytes, off_t offset)
 
                 if (block_info.is_cacheable)
                 {
-                     std::cout << "Block " << block_num << " is cacheable." << std::endl;
+                    std::cout << "Block " << block_num << " is cacheable." << std::endl;
                     // Block can be cached - but might not be in cache yet
                     if (!client_cache->isBlockCached(filename, block_num))
                     {
-                         std::cout << "Block " << block_num << " not in cache, fetching..." << std::endl;
+                        std::cout << "Block " << block_num << " not in cache, fetching..." << std::endl;
                         // Block not in cache - try to fetch it
                         int result = fetchAndCacheBlock(filename, block_num,
                                                         static_cast<char *>(buf) + bytes_read,
@@ -902,9 +1127,8 @@ int pfs_read(int fd, void *buf, size_t num_bytes, off_t offset)
                 }
                 else if (!block_info.is_cacheable)
                 {
-                    // If any block in range isn't cacheable, read everything directly
-                   std::cout << "Block " << block_num << " is not cacheable, reading directly from server..." << std::endl;
-                    int result = readBlockFromServer(filename.c_str(), block_num, buf);
+                    std::cout << "Block " << block_num << " is not cacheable, reading directly from server..." << std::endl;
+                    int result = readBlockFromServer(filename.c_str(), block_num, static_cast<char *>(buf) + bytes_read, block_offset, bytes_this_block);
                     if (result < 0)
                     {
                         std::cerr << "Failed to read block " << block_num << " from server" << std::endl;
@@ -913,7 +1137,8 @@ int pfs_read(int fd, void *buf, size_t num_bytes, off_t offset)
                     bytes_read += result; // reading from the server
                 }
             }
-             std::cout << "Finished reading " << bytes_read << " bytes after requesting token." << std::endl;
+            std::cout << "Finished reading " << bytes_read << " bytes after requesting token." << std::endl;
+            token_manager->CompleteTokenRange(filename, offset, offset + num_bytes);
             return bytes_read;
         }
         else
@@ -953,22 +1178,27 @@ int pfs_write(int fd, const void *buf, size_t num_bytes, off_t offset)
         std::cerr << "Filename not found for file descriptor: " << fd << std::endl;
         return -1;
     }
-     std::cout << "Filename resolved for fd " << fd << ": " << filename << std::endl;
-    if (!token_manager->WaitForConflictingTokensCompletion(filename, offset, offset + num_bytes))
-    {
-        std::cerr << "Failed waiting for conflicting tokens" << std::endl;
-        return -1;
-    }
+    std::cout << "Filename resolved for fd " << fd << ": " << filename << std::endl;
+    // if (!token_manager->WaitForConflictingTokensCompletion(filename, offset, offset + num_bytes))
+    // {
+    //     std::cerr << "Failed waiting for conflicting tokens" << std::endl;
+    //     return -1;
+    // }
     if (token_manager->HasTokenForRange(fd, offset, offset + num_bytes, 1))
     {
         // to do::change the running status of token
+        if (!token_manager->SetTokenStatus(filename, offset, offset + num_bytes, "active"))
+        {
+            // If needed, handle the case where updating status fails
+            std::cerr << "Failed to set token status to 'active'." << std::endl;
+        }
         std::cout << "Write token is already held by the client." << std::endl;
         int32_t start_block = offset / PFS_BLOCK_SIZE;
         int32_t end_block = (offset + num_bytes - 1) / PFS_BLOCK_SIZE;
 
         for (int block_num = start_block; block_num <= end_block; block_num++)
         {
-             std::cout << "Processing block " << block_num << std::endl;
+            std::cout << "Processing block " << block_num << std::endl;
             auto &block_info = block_cache_status[filename][block_num];
             size_t block_offset = (block_num == start_block) ? offset % PFS_BLOCK_SIZE : 0;
             size_t bytes_this_block = std::min(
@@ -977,7 +1207,7 @@ int pfs_write(int fd, const void *buf, size_t num_bytes, off_t offset)
             );
             if (client_cache->isBlockCached(filename, block_num))
             {
-                 std::cout << "Block " << block_num << " is cached. Writing to cache." << std::endl;
+                std::cout << "Block " << block_num << " is cached. Writing to cache." << std::endl;
                 int result = client_cache->writeToCache(
                     filename, block_num,
                     static_cast<const char *>(buf) + bytes_written,
@@ -993,7 +1223,8 @@ int pfs_write(int fd, const void *buf, size_t num_bytes, off_t offset)
             }
             else
             {
-                 std::cout << "Block " << block_num << " is not cached. Requesting cache invalidation." << std::endl;
+                std::cout << "Block " << block_num << " is not cached. Requesting cache invalidation." << std::endl;
+                std::vector<char> block_buffer(PFS_BLOCK_SIZE);
                 pfs::CacheRequest request;
                 pfs::CacheResponse response;
                 ClientContext context;
@@ -1006,7 +1237,7 @@ int pfs_write(int fd, const void *buf, size_t num_bytes, off_t offset)
                 if (response.success())
                 {
                     std::cout << "Cache invalidation succeeded for block " << block_num << std::endl;
-                    int result = fetchAndCacheBlock(filename, block_num, nullptr, 0, 0);
+                    int result = fetchAndCacheBlock(filename, block_num, block_buffer.data(), 0, PFS_BLOCK_SIZE);
                     if (result < 0)
                     {
                         std::cerr << "Failed to fetch block " << block_num << " for writing" << std::endl;
@@ -1027,7 +1258,7 @@ int pfs_write(int fd, const void *buf, size_t num_bytes, off_t offset)
 
                     // block_info.is_dirty = true; // Mark the block as modified
                     bytes_written += result;
-                     std::cout << "Bytes written to cache for block " << block_num << ": " << result << std::endl;
+                    std::cout << "Bytes written to cache for block " << block_num << ": " << result << std::endl;
                 }
             }
             // if(client_cache.)
@@ -1036,7 +1267,7 @@ int pfs_write(int fd, const void *buf, size_t num_bytes, off_t offset)
             // else if cache hit, write to the blocks
         }
         token_manager->CompleteTokenRange(filename, offset, offset + num_bytes);
-         std::cout << "Write operation completed for range: " << offset << " to " << offset + num_bytes << std::endl;
+        std::cout << "Write operation completed for range: " << offset << " to " << offset + num_bytes << std::endl;
         return bytes_written;
     }
     else if (RequestToken(fd, offset, offset + num_bytes, 1))
@@ -1048,7 +1279,7 @@ int pfs_write(int fd, const void *buf, size_t num_bytes, off_t offset)
 
         for (int block_num = start_block; block_num <= end_block; block_num++)
         {
-             std::cout << "Processing block " << block_num << std::endl;
+            std::cout << "Processing block " << block_num << std::endl;
             auto &block_info = block_cache_status[filename][block_num];
             size_t block_offset = (block_num == start_block) ? offset % PFS_BLOCK_SIZE : 0;
             size_t bytes_this_block = std::min(
@@ -1071,12 +1302,13 @@ int pfs_write(int fd, const void *buf, size_t num_bytes, off_t offset)
 
                 // block_info.is_dirty = true; // Mark the block as modified
                 bytes_written += result;
-                 std::cout << "Bytes written to cache for block " << block_num << ": " << result << std::endl;
+                std::cout << "Bytes written to cache for block " << block_num << ": " << result << std::endl;
             }
             else
             {
+                std::vector<char> block_buffer(PFS_BLOCK_SIZE);
                 std::cout << "Block " << block_num << " is not cached. Fetching block." << std::endl;
-                int result = fetchAndCacheBlock(filename, block_num, nullptr, 0, 0);
+                int result = fetchAndCacheBlock(filename, block_num, block_buffer.data(), 0, PFS_BLOCK_SIZE);
                 if (result < 0)
                 {
                     std::cerr << "Failed to fetch block " << block_num << " for writing" << std::endl;
@@ -1097,7 +1329,7 @@ int pfs_write(int fd, const void *buf, size_t num_bytes, off_t offset)
 
                 // block_info.is_dirty = true; // Mark the block as modified
                 bytes_written += result;
-                 std::cout << "Bytes written to cache for block " << block_num << ": " << result << std::endl;
+                std::cout << "Bytes written to cache for block " << block_num << ": " << result << std::endl;
             }
         }
         token_manager->CompleteTokenRange(filename, offset, offset + num_bytes);
@@ -1135,61 +1367,145 @@ int pfs_printAllTokensFromServer()
     return 0;
 }
 
-int pfs_close(int fd) {
-    std::cout << "pfs_close called with file descriptor: " << fd << std::endl;
+int pfs_close(int fd)
+{
+    // std::cout << "pfs_close called with file descriptor: " << fd << std::endl;
+
+    // // Step 1: Validate file descriptor
+    // if (fd < 0)
+    // {
+    //     std::cerr << "Error: Invalid file descriptor for pfs_close: " << fd << std::endl;
+    //     return -1;
+    // }
+
+    // // Check if the file descriptor exists
+    // auto it = fd_to_filename.find(fd);
+    // if (it == fd_to_filename.end())
+    // {
+    //     std::cerr << "Error: File descriptor not found or file is not open: " << fd << std::endl;
+    //     return -1;
+    // }
+
+    // std::string filename = it->second;
+    // std::cout << "File associated with descriptor " << fd << " is: " << filename << std::endl;
+
+    // // Step 2: Notify the metadata server
+    // pfs::CloseFileRequest request;
+    // request.set_file_descriptor(fd);
+    // std::cout << "Sending CloseFileRequest to metadata server for descriptor: " << fd << std::endl;
+
+    // pfs::CloseFileResponse response;
+    // grpc::ClientContext context;
+
+    // grpc::Status status = metaserver_stub->CloseFile(&context, request, &response);
+
+    // if (!status.ok())
+    // {
+    //     std::cerr << "Error: gRPC call to CloseFile failed with message: " << status.error_message() << std::endl;
+    //     return -1;
+    // }
+
+    // if (!response.success())
+    // {
+    //     std::cerr << "Error: Metadata server failed to close file descriptor " << fd
+    //               << " with error: " << response.error_message() << std::endl;
+    //     return -1;
+    // }
+
+    // std::cout << "File descriptor " << fd << " successfully closed on metadata server." << std::endl;
+
+    // // Step 3: Remove file descriptor from local tracking structures
+    // std::cout << "Removing file descriptor " << fd << " from local tracking structures." << std::endl;
+    // fd_to_filename.erase(fd);
+
+    // if (file_mode.find(fd) != file_mode.end())
+    // {
+    //     file_mode.erase(fd);
+    //     std::cout << "File mode for descriptor " << fd << " removed successfully." << std::endl;
+    // }
+    // else
+    // {
+    //     std::cout << "Warning: No file mode entry found for descriptor " << fd << "." << std::endl;
+    // }
+
+    // std::cout << "pfs_close completed successfully for file descriptor: " << fd << std::endl;
+    // return 0;
+
+  std::cout << "[DEBUG] pfs_close called with file descriptor: " << fd << std::endl;
 
     // Step 1: Validate file descriptor
-    if (fd < 0) {
-        std::cerr << "Error: Invalid file descriptor for pfs_close: " << fd << std::endl;
+    if (fd < 0)
+    {
+        std::cerr << "[ERROR] Invalid file descriptor for pfs_close: " << fd << std::endl;
         return -1;
     }
-
-    // Check if the file descriptor exists
-    auto it = fd_to_filename.find(fd);
-    if (it == fd_to_filename.end()) {
-        std::cerr << "Error: File descriptor not found or file is not open: " << fd << std::endl;
-        return -1;
-    }
-
-    std::string filename = it->second;
-    std::cout << "File associated with descriptor " << fd << " is: " << filename << std::endl;
 
     // Step 2: Notify the metadata server
     pfs::CloseFileRequest request;
     request.set_file_descriptor(fd);
-    std::cout << "Sending CloseFileRequest to metadata server for descriptor: " << fd << std::endl;
+    request.set_client_id(client_id);
 
     pfs::CloseFileResponse response;
     grpc::ClientContext context;
 
+    std::cout << "[DEBUG] Sending CloseFileRequest to metadata server for descriptor: " << fd << std::endl;
     grpc::Status status = metaserver_stub->CloseFile(&context, request, &response);
 
-    if (!status.ok()) {
-        std::cerr << "Error: gRPC call to CloseFile failed with message: " << status.error_message() << std::endl;
+    if (!status.ok())
+    {
+        std::cerr << "[ERROR] gRPC call to CloseFile failed with message: " << status.error_message() << std::endl;
         return -1;
     }
 
-    if (!response.success()) {
-        std::cerr << "Error: Metadata server failed to close file descriptor " << fd
+    if (!response.success())
+    {
+        std::cerr << "[ERROR] Metadata server failed to close file descriptor " << fd
                   << " with error: " << response.error_message() << std::endl;
         return -1;
     }
 
-    std::cout << "File descriptor " << fd << " successfully closed on metadata server." << std::endl;
+    std::cout << "[DEBUG] Metadata server successfully closed file descriptor: " << fd << std::endl;
 
-    // Step 3: Remove file descriptor from local tracking structures
-    std::cout << "Removing file descriptor " << fd << " from local tracking structures." << std::endl;
-    fd_to_filename.erase(fd);
+    // Step 3: Write back all dirty blocks for the filename stored in fd_map
+    auto it = fd_to_filename.find(fd);
+    if (it != fd_to_filename.end())
+    {
+        std::string filename = it->second;
+        std::cout << "[DEBUG] Found filename: " << filename << " for file descriptor: " << fd << std::endl;
 
-    if (file_mode.find(fd) != file_mode.end()) {
-        file_mode.erase(fd);
-        std::cout << "File mode for descriptor " << fd << " removed successfully." << std::endl;
-    } else {
-        std::cout << "Warning: No file mode entry found for descriptor " << fd << "." << std::endl;
+        std::cout << "[DEBUG] Writing back all dirty blocks for file: " << filename << std::endl;
+
+        // Call WriteBackAllFileName to write all dirty blocks to file server
+        client_cache->WriteBackAllFileName(filename);
+        std::cout << "[DEBUG] Write back for all dirty blocks completed for file: " << filename << std::endl;
+
+        // Optionally clear or invalidate the cache for the file
+        // std::cout << "[DEBUG] Invalidating cache for file: " << filename << std::endl;
+        // client_cache->InvalidateCacheRange(filename, 0, 0); // Invalidate all blocks of the file
+    }
+    else
+    {
+        std::cerr << "[ERROR] Invalid file descriptor. Cannot find associated filename for fd: " << fd << std::endl;
+        return -1;
     }
 
-    std::cout << "pfs_close completed successfully for file descriptor: " << fd << std::endl;
+    // Step 4: Remove file descriptor from local tracking structures
+    std::cout << "[DEBUG] Removing file descriptor: " << fd << " from local tracking structures." << std::endl;
+    fd_to_filename.erase(fd);
+
+    if (file_mode.find(fd) != file_mode.end())
+    {
+        file_mode.erase(fd);
+        std::cout << "[DEBUG] Removed file mode entry for descriptor: " << fd << std::endl;
+    }
+    else
+    {
+        std::cout << "[WARNING] No file mode entry found for descriptor: " << fd << std::endl;
+    }
+
+    std::cout << "[DEBUG] pfs_close completed successfully for file descriptor: " << fd << std::endl;
     return 0;
+   
 }
 
 int pfs_delete(const char *filename)
@@ -1198,16 +1514,18 @@ int pfs_delete(const char *filename)
     return 0;
 }
 
-
-int pfs_fstat(int fd, pfs_metadata* metadata) {
-    if (fd < 0 || metadata == nullptr) {
+int pfs_fstat(int fd, pfs_metadata *metadata)
+{
+    if (fd < 0 || metadata == nullptr)
+    {
         std::cerr << "Invalid arguments to pfs_fstat: fd=" << fd << ", metadata=" << metadata << std::endl;
         return -1;
     }
 
     // Map file descriptor to filename
     std::string filename = fd_to_filename[fd];
-    if (filename.empty()) {
+    if (filename.empty())
+    {
         std::cerr << "File descriptor " << fd << " is not associated with a file." << std::endl;
         return -1;
     }
@@ -1222,19 +1540,21 @@ int pfs_fstat(int fd, pfs_metadata* metadata) {
     // Call FetchMetadata RPC using the stub
     grpc::Status status = metaserver_stub->FetchMetadata(&context, request, &response);
 
-    if (!status.ok()) {
+    if (!status.ok())
+    {
         std::cerr << "Error calling FetchMetadata: " << status.error_message() << std::endl;
         return -1;
     }
 
-    if (!response.success()) {
+    if (!response.success())
+    {
         std::cerr << "FetchMetadata failed: " << response.error_message() << std::endl;
         return -1;
     }
 
     // Populate the metadata structure
     strncpy(metadata->filename, response.filename().c_str(), sizeof(metadata->filename) - 1);
-metadata->filename[sizeof(metadata->filename) - 1] = '\0'; // Ensure null-termination
+    metadata->filename[sizeof(metadata->filename) - 1] = '\0'; // Ensure null-termination
 
     metadata->file_size = response.file_size();
     metadata->ctime = response.creation_time();

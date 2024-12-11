@@ -50,6 +50,8 @@ public:
     bool isDirty(const std::string& filename, int32_t block_num);
     void markDirty(const std::string& filename, int32_t block_num);
     bool getBlock(const std::string& filename, int32_t block_num, void** data, size_t* size);
+    void WriteBackAllFileName(std::string& file_name);
+    void WriteBackAllAndClear();
 };
 
 #endif // PFS_CACHE_HPP

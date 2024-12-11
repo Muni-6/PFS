@@ -118,6 +118,8 @@ message StreamResponse {
     repeated int32 cacheable_blocks = 8;
     repeated int32 invalidate_blocks = 9;
     bool invalidate = 10;
+    int32 client_id = 11;
+    bool mode = 12;
 }
 
 message CreateFileRequest {
@@ -211,6 +213,7 @@ message FetchExecStatsResponse {
 
 message CloseFileRequest {
     int32 file_descriptor = 1; // The file descriptor to close
+    int32 client_id = 2;
 }
 
 message CloseFileResponse {

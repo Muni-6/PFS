@@ -1,5 +1,5 @@
 #include "pfs_cache.hpp"
-
+#include "pfs_api.hpp"
 #include <unordered_map>
 #include <list>
 #include <mutex>
@@ -27,6 +27,7 @@
 //     std::mutex cache_mutex;
 
 // public:
+extern int writeBlockToServer(const char *filename, int block_num, const void *block_data);
 PFSCache::PFSCache(size_t max_cache_blocks) : max_blocks(max_cache_blocks) {}
 
 bool PFSCache::isBlockCached(const std::string &filename, int32_t block_num)
@@ -110,6 +111,110 @@ int PFSCache::readFromCache(const std::string &filename, int32_t block_num,
     return bytes_to_read;
 }
 
+void PFSCache::WriteBackAllAndClear()
+{
+    std::lock_guard<std::mutex> lock(cache_mutex);
+
+    // Iterate through all files
+    for (auto &file_entry : cache)
+    {
+        const std::string &filename = file_entry.first;
+        auto &blocks = file_entry.second;
+
+        // Iterate through all blocks of the file
+        for (auto &block_entry : blocks)
+        {
+            int32_t block_num = block_entry.first;
+            CacheBlock &block = block_entry.second;
+
+            // If block is dirty, write it back
+            if (block.is_dirty)
+            {
+                // Attempt to write the block back to the server
+                writeBackBlock(filename, block_num, block.data.data(), block.data.size());
+                // After successful writeback, consider resetting dirty flag if needed
+                // But since we're clearing cache anyway, this isn't strictly necessary
+            }
+        }
+    }
+
+    // Clear all cached data
+    cache.clear();
+
+    // If you maintain any LRU or other metadata structures, clear them here
+    // For instance, if you have something like: lru_list.clear();
+
+    std::cout << "All dirty blocks have been written back and the cache is now cleared." << std::endl;
+}
+
+void PFSCache::WriteBackAllFileName(std::string& file_name)
+{
+    std::lock_guard<std::mutex> lock(cache_mutex);
+    std::cout << "[DEBUG] WriteBackAllFileName called for file: " << file_name << std::endl;
+
+    bool file_found = false;
+
+    // Iterate through all files in the cache
+    for (auto &file_entry : cache)
+    {
+        const std::string &filename = file_entry.first;
+
+        if (file_name == filename)
+        {
+            file_found = true;
+            std::cout << "[DEBUG] Found matching file in cache: " << filename << std::endl;
+
+            auto &blocks = file_entry.second;
+
+            // Iterate through all blocks of the file
+            for (auto &block_entry : blocks)
+            {
+                int32_t block_num = block_entry.first;
+                CacheBlock &block = block_entry.second;
+
+                // Check if the block is dirty
+                if (block.is_dirty)
+                {
+                    std::cout << "[DEBUG] Dirty block found. Writing back block number: " << block_num
+                              << " for file: " << filename << std::endl;
+
+                    // Attempt to write the block back to the server
+                    writeBackBlock(filename, block_num, block.data.data(), block.data.size());
+
+                    std::cout << "[DEBUG] Successfully wrote back block number: " << block_num
+                              << " for file: " << filename << std::endl;
+                }
+                else
+                {
+                    std::cout << "[DEBUG] Block number: " << block_num
+                              << " for file: " << filename << " is not dirty. Skipping write back." << std::endl;
+                }
+            }
+
+            // Stop searching after processing the specified file
+            break;
+        }
+        else
+        {
+            std::cout << "[DEBUG] Skipping file: " << filename << " as it does not match " << file_name << std::endl;
+        }
+    }
+
+    if (!file_found)
+    {
+        std::cerr << "[ERROR] File not found in cache: " << file_name << std::endl;
+        return;
+    }
+
+    // Clear all cached data
+    cache.clear();
+    std::cout << "[DEBUG] Cache cleared after writing back all dirty blocks for file: " << file_name << std::endl;
+
+    // Clear any associated metadata if applicable
+    // Example: lru_list.clear();
+    // std::cout << "[DEBUG] 
+}
+
 int PFSCache::writeToCache(const std::string &filename, int32_t block_num, const void *buf,
                            off_t offset, size_t num_bytes)
 {
@@ -143,24 +248,38 @@ void PFSCache::addToCache(const std::string &filename, int32_t block_num,
 {
     std::lock_guard<std::mutex> lock(cache_mutex);
 
+    std::cout << "Attempting to add block " << block_num
+              << " of file \"" << filename << "\" to cache." << std::endl;
+
     // Check if we need to evict a block
     if (getCacheSize() >= max_blocks)
     {
+        std::cout << "Cache is full. Current size: " << getCacheSize()
+                  << ", Max allowed: " << max_blocks << ". Evicting a block." << std::endl;
         evictBlock();
     }
 
     auto &block = cache[filename][block_num];
     block.data.resize(size);
+
+    std::cout << "Resized block data to " << size << " bytes for block " << block_num << "." << std::endl;
+
     std::memcpy(block.data.data(), data, size);
+    std::cout << "Copied " << size << " bytes of data into cache for block " << block_num << "." << std::endl;
+
     block.filename = filename;
     block.block_number = block_num;
     block.is_dirty = false;
     block.last_access = std::time(nullptr);
+
+    std::cout << "Block " << block_num << " of file \"" << filename
+              << "\" added to cache. Last access time set to "
+              << block.last_access << "." << std::endl;
 }
 
 void PFSCache::removeFromCache(const std::string &filename, int32_t block_num)
 {
-    std::lock_guard<std::mutex> lock(cache_mutex);
+    // std::lock_guard<std::mutex> lock(cache_mutex);
     auto file_it = cache.find(filename);
     if (file_it != cache.end())
     {
@@ -295,6 +414,20 @@ void PFSCache::evictBlock()
 void PFSCache::writeBackBlock(const std::string &filename, int32_t block_num,
                               const void *data, size_t size)
 {
+    std::cout << "writeBackBlock called for filename: " << filename
+              << ", block_num: " << block_num << std::endl;
+
+    int result = writeBlockToServer(filename.c_str(), block_num, data);
+    if (result < 0)
+    {
+        std::cerr << "Failed to write back block " << block_num
+                  << " for file " << filename << std::endl;
+    }
+    else
+    {
+        std::cout << "Successfully wrote back block " << block_num
+                  << " for file " << filename << std::endl;
+    }
     // This would call back to your file server write implementation
     // You'll need to properly integrate this with your existing write functionality
     // Similar to your pfs_doTheWrite function

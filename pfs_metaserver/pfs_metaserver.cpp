@@ -104,7 +104,7 @@ private:
     std::mutex active_requests_mutex;
 
 public:
-     void PrintAllTokens() {
+     void PrintAllTokens(const std::string &filename) {
         std::lock_guard<std::mutex> lock(token_mutex);
         
         if (file_tokens.empty()) {
@@ -116,7 +116,7 @@ public:
         
         // Group tokens by client_id
         std::map<std::int32_t, std::vector<TokenRange>> tokens_by_client;
-        auto &tokens = file_tokens["pfs_file1"];
+        auto &tokens = file_tokens[filename];
         for (const auto& token : tokens) {
             tokens_by_client[token.client_id].push_back(token);
         }
@@ -241,7 +241,9 @@ public:
         invalidate_msg.set_filename(filename);
         invalidate_msg.set_invalidate(true);
         invalidate_msg.set_request_id(request_id);
+        invalidate_msg.set_client_id(client_id);
         invalidate_msg.add_invalidate_blocks(block_num);
+        invalidate_msg.set_mode(true);
 
         stream->Write(invalidate_msg);
 
@@ -494,6 +496,8 @@ private:
                         invalidate_msg.set_invalidate(true);
                         invalidate_msg.set_request_id(request_id);
                         invalidate_msg.add_invalidate_blocks(block_num);
+                        invalidate_msg.set_client_id(client_id);
+                        invalidate_msg.set_mode(is_write);
 
                         std::cout << "Sending invalidate message for block " << block_num << std::endl;
 
@@ -568,7 +572,7 @@ private:
                        std::cout << "Updated block " << block_num << " with write cache client " << client_id << std::endl;
                 }
             }
-            PrintAllTokens(); 
+            PrintAllTokens(filename); 
             // Clean up request state
             {
                 std::lock_guard<std::mutex> lock(active_requests_mutex);
@@ -584,7 +588,7 @@ private:
         }
         return cacheable_blocks;
     }
-    void removeBlockTokens(const std::string &filename, off_t start, off_t end, int32_t client_id, bool is_write)
+    void removeBlockTokens(const std::string &filename, off_t start, off_t end, int32_t client_id)
     {
         auto& file_map = file_block_tokens[filename];
         auto& all_tokens = file_tokens[filename];
@@ -653,7 +657,7 @@ private:
                   << ", end=" << token.end_offset 
                   << std::endl;
             ShrinkOrRemoveToken(token, start, end);
-            removeBlockTokens(token.filename, start, end, token.client_id, token.is_write); //clear and update the block tokens
+            removeBlockTokens(token.filename, start, end, token.client_id); //clear and update the block tokens
         }
          std::cout << "Initializing invalidate acks for request: " << request_id << std::endl;
          {
@@ -675,6 +679,8 @@ private:
             invalidate_msg.set_end_offset(end);
             invalidate_msg.set_request_id(request_id);
             invalidate_msg.set_invalidate(false);
+            invalidate_msg.set_client_id(requesting_client_id);
+            invalidate_msg.set_mode(is_write);
             int32_t start_block = start / PFS_BLOCK_SIZE;
             int32_t end_block = end / PFS_BLOCK_SIZE;
             for (int32_t block_num = start_block; block_num <= end_block; block_num++)
@@ -728,7 +734,7 @@ private:
             std::cout << "Grant ack received" << std::endl;
         }
 
-        PrintAllTokens(); 
+        PrintAllTokens(filename); 
         // Clean up request state
         {
             std::lock_guard<std::mutex> lock(active_requests_mutex);
@@ -881,7 +887,7 @@ private:
         metadata_store[filename].fd = fd;
         metadata_store[filename].file_mode = mode;
         //std::int32_t fd = filename_to_fd[filename];
-        //file_descriptors[fd] = mode;
+        file_descriptors[fd] = mode;
         // exec_stats.num_open_files++;
         fd_to_filename[fd]=filename;
         filename_to_fd[filename] = fd;
@@ -986,32 +992,97 @@ private:
         return Status::OK;
     }
 
-    Status CloseFile(ServerContext* context, const CloseFileRequest* request, CloseFileResponse* response) override {
-        std::lock_guard<std::mutex> lock(metadata_mutex);
+   Status CloseFile(ServerContext *context, const CloseFileRequest *request, CloseFileResponse *response) override
+{
+    std::lock_guard<std::mutex> metadata_lock(metadata_mutex);
 
-        int32_t fd = request->file_descriptor();
+    int32_t fd = request->file_descriptor();
+    int32_t client_id = request->client_id();
+    DEBUG_LOG("Processing CloseFile request for file descriptor: " + std::to_string(fd) + ", client ID: " + std::to_string(client_id));
 
-        auto fd_it = fd_to_filename.find(fd);
-        if (fd_it == fd_to_filename.end()) {
-            response->set_success(false);
-            response->set_error_message("Invalid or non-existent file descriptor.");
-            return Status::OK;
-        }
-
-        auto &file_metadata = metadata_store[fd_it->second];
-        file_metadata.fd = -1; // Reset file descriptor
-        file_metadata.close_time = std::time(nullptr);
-
-
-        // Perform cleanup: Remove file descriptor from fd_to_filename
-        std::cout << "Closing file descriptor: " << fd
-                << ", Filename: " << fd_it->second << std::endl;
-        fd_to_filename.erase(fd_it);
-
-        // Respond with success
-        response->set_success(true);
+    // Check if the file descriptor is valid
+    auto fd_it = fd_to_filename.find(fd);
+    auto mode_it = file_descriptors.find(fd);
+    if (fd_it == fd_to_filename.end())
+    {
+        DEBUG_LOG("Invalid file descriptor: " + std::to_string(fd));
+        response->set_success(false);
+        response->set_error_message("Invalid file descriptor");
         return Status::OK;
+    }
+
+    std::string filename = fd_it->second;
+    int mode = file_descriptors[fd];
+    DEBUG_LOG("Valid file descriptor. Filename: " + filename + ", Mode: " + std::to_string(mode));
+
+    fd_to_filename.erase(fd_it);
+    file_descriptors.erase(mode_it);
+    DEBUG_LOG("Erased file descriptor and associated data.");
+
+    {
+        std::lock_guard<std::mutex> lock(token_mutex);
+        auto &tokens = file_tokens[filename];
+        DEBUG_LOG("Cleaning tokens for filename: " + filename + ", Number of tokens before cleanup: " + std::to_string(tokens.size()));
+
+        tokens.erase(
+            std::remove_if(tokens.begin(), tokens.end(),
+                           [&](const TokenRange &t)
+                           { return t.client_id == client_id; }),
+            tokens.end());
+
+        if (tokens.empty())
+        {
+            file_tokens.erase(filename);
+            DEBUG_LOG("No tokens remaining for file. Removed entry for filename: " + filename);
         }
+        else
+        {
+            DEBUG_LOG("Tokens remaining for file after cleanup: " + std::to_string(tokens.size()));
+        }
+    }
+
+    {
+        if (file_block_tokens.find(filename) != file_block_tokens.end())
+        {
+            auto &file_map = file_block_tokens[filename];
+            DEBUG_LOG("File found in block tokens. Processing blocks for file: " + filename);
+
+            for (auto &[block_number, block_info] : file_map.blocks)
+            {
+                DEBUG_LOG("Processing block number: " + std::to_string(block_number));
+
+                block_info.write_block_cached_client.erase(client_id);
+                DEBUG_LOG("Removed client from write_block_cached_client for block: " + std::to_string(block_number));
+
+                block_info.clients_caching_block.erase(client_id);
+                DEBUG_LOG("Removed client from clients_caching_block for block: " + std::to_string(block_number));
+            }
+
+            if (metadata_store.find(filename) != metadata_store.end())
+            {
+                int32_t file_size = metadata_store[filename].file_size;
+                DEBUG_LOG("File size retrieved from metadata store: " + std::to_string(file_size));
+                removeBlockTokens(filename, 0, file_size, client_id);
+                DEBUG_LOG("Removed block tokens for file: " + filename);
+            }
+            else
+            {
+                DEBUG_LOG("File not found in metadata store: " + filename);
+            }
+        }
+        else
+        {
+            DEBUG_LOG("File not found in block tokens: " + filename);
+        }
+    }
+
+    // TODO: Update block tokens for all blocks of the file, use removeBlockTokens
+    // TODO: Update the last close time and handle opened_fd
+    DEBUG_LOG("Completed cleanup for file: " + filename);
+
+    response->set_success(true);
+    return Status::OK;
+}
 };
 void RunMetaServer(const std::string &server_address)
 {
