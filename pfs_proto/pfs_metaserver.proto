@@ -36,6 +36,8 @@ service MetaServer {
 
     rpc CloseFile(CloseFileRequest) returns (CloseFileResponse);
 
+    rpc InvalidateCache(CacheRequest) returns (CacheResponse);
+
    // rpc TokenStream(stream TokenMessage) returns (stream TokenMessage);
 
     //rpc NotifyWriteStatus(WriteStatus) returns (StatusResponse);
@@ -45,6 +47,18 @@ service MetaServer {
 // Message definitions
 // Request to create a new file
 message AliveRequestMeta {
+}
+
+message CacheRequest{
+    int32 client_id = 1;
+    string filename = 2;
+    int32 block_num = 3;
+    int32 start_offset = 4;
+    int32 end_offset = 5;
+}
+
+message CacheResponse{
+    bool  success = 1;
 }
 
 message AliveResponseMeta {
@@ -70,6 +84,8 @@ message GetAllTokensResponse {
 message TokenResponse{
     int32 client_id = 1;
     bool success = 2;
+    string filename = 3;
+    repeated int32 cacheable_blocks = 4;
 }
 
 message RegisterClientRequest{
@@ -99,6 +115,11 @@ message StreamResponse {
     int32 end_offset = 5;
     bool is_write = 6;
     string request_id = 7;
+    repeated int32 cacheable_blocks = 8;
+    repeated int32 invalidate_blocks = 9;
+    bool invalidate = 10;
+    int32 client_id = 11;
+    bool mode = 12;
 }
 
 message CreateFileRequest {
@@ -171,6 +192,7 @@ message DeleteFileRequest {
 message DeleteFileResponse {
     bool success = 1;
     string error_message = 2;
+    int32 stripe_width = 3;
 }
 
 // Request to fetch execution statistics
@@ -192,6 +214,7 @@ message FetchExecStatsResponse {
 
 message CloseFileRequest {
     int32 file_descriptor = 1; // The file descriptor to close
+    int32 client_id = 2;
 }
 
 message CloseFileResponse {

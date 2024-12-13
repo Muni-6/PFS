@@ -1,5 +1,5 @@
-e5-cse-135-13.cse.psu.edu:63000
-e5-cse-135-05.cse.psu.edu:63001
-e5-cse-135-17.cse.psu.edu:63002
-e5-cse-135-14.cse.psu.edu:63003
-e5-cse-135-12.cse.psu.edu:63004
+e5-cse-135-21.cse.psu.edu:57000
+e5-cse-135-06.cse.psu.edu:57011
+e5-cse-135-17.cse.psu.edu:57012
+e5-cse-135-14.cse.psu.edu:57013
+e5-cse-135-22.cse.psu.edu:57014

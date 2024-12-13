@@ -25,7 +25,7 @@ class  FileServerImpl final:public FileServer :: Service{
         const std::string& filename = request->filename();
         int64_t offset = request->offset();
         const std::string& data = request->data();
-
+        // sleep(1000);
         std::cout << "Write Chunk:   =====================    "<<"Filename: " << filename 
           << ", Offset: " << offset 
           << ", Data: " << data 
@@ -106,18 +106,25 @@ class  FileServerImpl final:public FileServer :: Service{
         response->set_data(std::string(buffer.begin(), buffer.begin() + file.gcount()));
         return Status::OK;
     }
-    Status DeleteChunk(ServerContext* context, const DeleteChunkRequest* request, DeleteChunkResponse* response) {
-        const std::string& filename = request->filename();
+    Status DeleteChunkFile(ServerContext* context, const DeleteChunkFileRequest* request, DeleteChunkFileResponse* response) {
+        const std::string& chunk_filename = request->filename();
 
-        // Attempt to delete the file
-        if (std::remove(filename.c_str()) != 0) {
-            response->set_success(false);
-            response->set_error_message("Failed to delete file.");
-            return Status::CANCELLED;
-        }
+       
+            // Attempt to delete the chunk file
+            if (std::remove(chunk_filename.c_str()) != 0) {
+                // If deletion fails for any chunk, return an error
+                std::cerr << "Failed to delete chunk file: " << chunk_filename << std::endl;
+                response->set_success(false);
+                response->set_message("Failed to delete one or more chunk files.");
+                return grpc::Status::CANCELLED;
+            }
 
+            std::cout << "Deleted chunk file: " << chunk_filename << std::endl;
+        
+        // If all chunk files are successfully deleted
         response->set_success(true);
-        return Status::OK;
+        std::cout << "All chunk files for file '" << chunk_filename << "' successfully deleted." << std::endl;
+        return grpc::Status::OK;
     }
 
     Status GetChunkInfo(ServerContext* context, const GetChunkInfoRequest* request, GetChunkInfoResponse* response) {

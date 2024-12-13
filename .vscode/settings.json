@@ -53,6 +53,8 @@
         "thread": "cpp",
         "typeinfo": "cpp",
         "map": "cpp",
-        "codecvt": "cpp"
+        "codecvt": "cpp",
+        "bit": "cpp",
+        "iomanip": "cpp"
     }
 }

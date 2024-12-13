@@ -10,8 +10,7 @@ service FileServer {
     // RPC to write a chunk of data to the file server
     rpc WriteChunk(WriteChunkRequest) returns (WriteChunkResponse);
 
-    // RPC to delete a file chunk from the file server
-    rpc DeleteChunk(DeleteChunkRequest) returns (DeleteChunkResponse);
+    rpc DeleteChunkFile(DeleteChunkFileRequest) returns (DeleteChunkFileResponse);
 
     // RPC to get information about a file chunk
     rpc GetChunkInfo(GetChunkInfoRequest) returns (GetChunkInfoResponse);
@@ -57,16 +56,16 @@ message WriteChunkResponse {
 }
 
 // Request to delete a file chunk
-message DeleteChunkRequest {
+message DeleteChunkFileRequest {
     string filename = 1;       // The name of the file to be deleted
+   
 }
 
 // Response for DeleteChunk
-message DeleteChunkResponse {
+message DeleteChunkFileResponse {
     bool success = 1;
-    string error_message = 2;
+    string message = 2; // Optional error message
 }
-
 // Request to get information about a file chunk
 message GetChunkInfoRequest {
     string filename = 1;       // The name of the file
