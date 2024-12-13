@@ -192,6 +192,7 @@ message DeleteFileRequest {
 message DeleteFileResponse {
     bool success = 1;
     string error_message = 2;
+    int32 stripe_width = 3;
 }
 
 // Request to fetch execution statistics

@@ -28,7 +28,7 @@
 
 // public:
 extern int writeBlockToServer(const char *filename, int block_num, const void *block_data);
-PFSCache::PFSCache(size_t max_cache_blocks) : max_blocks(max_cache_blocks) {}
+PFSCache::PFSCache(size_t max_cache_blocks,struct pfs_execstat& global_cache_stat) : max_blocks(max_cache_blocks), global_cache_stat(global_cache_stat) {}
 
 bool PFSCache::isBlockCached(const std::string &filename, int32_t block_num)
 {
@@ -179,7 +179,10 @@ void PFSCache::WriteBackAllFileName(std::string& file_name)
                               << " for file: " << filename << std::endl;
 
                     // Attempt to write the block back to the server
+                    global_cache_stat.num_close_writebacks++;
                     writeBackBlock(filename, block_num, block.data.data(), block.data.size());
+
+                    global_cache_stat.num_writebacks--;
 
                     std::cout << "[DEBUG] Successfully wrote back block number: " << block_num
                               << " for file: " << filename << std::endl;
@@ -208,6 +211,7 @@ void PFSCache::WriteBackAllFileName(std::string& file_name)
 
     // Clear all cached data
     cache.clear();
+    global_cache_stat.num_close_evictions++;
     std::cout << "[DEBUG] Cache cleared after writing back all dirty blocks for file: " << file_name << std::endl;
 
     // Clear any associated metadata if applicable
@@ -286,6 +290,7 @@ void PFSCache::removeFromCache(const std::string &filename, int32_t block_num)
         file_it->second.erase(block_num);
         if (file_it->second.empty())
         {
+            global_cache_stat.num_invalidations++;
             cache.erase(file_it);
         }
     }
@@ -367,15 +372,23 @@ void PFSCache::evictBlock()
     int32_t evict_block = -1;
     std::time_t oldest_access = std::time(nullptr);
 
+    std::cout << "Evicting block...\n";
+
     for (const auto &file : cache)
     {
         for (const auto &block : file.second)
         {
-            if (block.second.last_access < oldest_access && !block.second.is_dirty)
+            if (block.second.last_access <= oldest_access && !block.second.is_dirty)
             {
                 oldest_access = block.second.last_access;
                 evict_file = file.first;
                 evict_block = block.first;
+
+                global_cache_stat.num_evictions++;
+
+                std::cout << "Found non-dirty block candidate for eviction: "
+                            << "file=" << evict_file << ", block=" << evict_block
+                            << ", last_access=" << oldest_access << "\n";
             }
         }
     }
@@ -383,40 +396,65 @@ void PFSCache::evictBlock()
     // If found a non-dirty block, evict it
     if (evict_block != -1)
     {
+        std::cout << "Evicting non-dirty block: file=" << evict_file << ", block=" << evict_block << "\n";
         removeFromCache(evict_file, evict_block);
         return;
     }
 
-    // If all blocks are dirty, write back the oldest one
-    oldest_access = std::time(nullptr);
-    for (const auto &file : cache)
-    {
-        for (const auto &block : file.second)
-        {
-            if (block.second.last_access < oldest_access)
-            {
-                oldest_access = block.second.last_access;
-                evict_file = file.first;
-                evict_block = block.first;
-            }
-        }
-    }
+    std::cout << "No non-dirty blocks found. Looking for oldest dirty block...\n";
 
-    if (evict_block != -1)
+    // If all blocks are dirty, write back the oldest one
+    // Initialize oldest_access with the current time
+oldest_access = std::time(nullptr);
+std::cout << "Initializing oldest_access: " << oldest_access << "\n";
+
+// Iterate over cache files and blocks
+for (const auto &file : cache)
+{
+    std::cout << "Checking file: " << file.first << "\n";
+    for (const auto &block : file.second)
     {
-        // Write back dirty block
-        auto &block = cache[evict_file][evict_block];
-        writeBackBlock(evict_file, evict_block, block.data.data(), block.data.size());
-        removeFromCache(evict_file, evict_block);
+        std::cout << "Checking block: " << block.first << "\n";
+        if (block.second.last_access <= oldest_access)
+        {
+            oldest_access = block.second.last_access;
+            evict_file = file.first;
+            evict_block = block.first;
+
+            std::cout << "Found dirty block candidate for write-back: "
+                        << "file=" << evict_file << ", block=" << evict_block
+                        << ", last_access=" << oldest_access << "\n";
+        }
+        else
+        {
+            std::cout << "Block not older than current oldest: "
+                        << "file=" << file.first << ", block=" << block.first
+                        << ", last_access=" << block.second.last_access << "\n";
+        }
     }
 }
 
+    if (evict_block != -1)
+    {
+        std::cout << "Writing back dirty block: file=" << evict_file << ", block=" << evict_block << "\n";
+        auto &block = cache[evict_file][evict_block];
+        writeBackBlock(evict_file, evict_block, block.data.data(), block.data.size());
+        std::cout << "Removing block from cache: file=" << evict_file << ", block=" << evict_block << "\n";
+        removeFromCache(evict_file, evict_block);
+    }
+    else
+    {
+        std::cout << "No blocks found for eviction or write-back.\n";
+    }
+}
 void PFSCache::writeBackBlock(const std::string &filename, int32_t block_num,
                               const void *data, size_t size)
 {
     std::cout << "writeBackBlock called for filename: " << filename
               << ", block_num: " << block_num << std::endl;
-
+              global_cache_stat.num_writebacks++;
+    // std::cout << "Press Enter to continue...\n";
+    // sleep(20);
     int result = writeBlockToServer(filename.c_str(), block_num, data);
     if (result < 0)
     {

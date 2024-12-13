@@ -20,8 +20,8 @@ struct FileMetadata
     std::int32_t creation_time;
     std::int32_t close_time;
     std::int32_t stripe_width;
-    std::int32_t fd;
-    std::int32_t file_mode;
+    // std::int32_t fd;
+    // std::int32_t file_mode;
     // int32_t stripe_blocks;
     //  std::map<int32_t, std::string> file_recipe;
 };
@@ -34,14 +34,15 @@ std::unordered_map<std::int32_t, int32_t> file_descriptors;
 std::int32_t num_servers = 0;
 std::int32_t next_fd = 1;
 
-std::mutex token_mutex;
+//std::mutex token_mutex;
+std::mutex global_mutex;
 
 class MetaServerImpl final : public MetaServer::Service
 {
 private:
     std::atomic<std::int32_t> next_client_id{1};
-    std::mutex metadata_mutex;
-    std::mutex clients_mutex;
+    //std::mutex metadata_mutex;
+    //std::mutex clients_mutex;
     struct BlockTokenInfo
     {
         int32_t block_number;
@@ -64,14 +65,14 @@ private:
     struct ClientInfo
     {
         std::string hostname;
-        std::time_t last_active;
-        std::mutex stream_mutex;
+        std::chrono::steady_clock::time_point last_active;
+        //std::mutex stream_mutex;
         grpc::ServerReaderWriter<StreamResponse, StreamRequest> *stream;
         bool is_connected;
 
         explicit ClientInfo(const std::string &host)
             : hostname(host),
-              last_active(std::time(nullptr)),
+              last_active( std::chrono::steady_clock::now()),
               stream(nullptr),
               is_connected(false)
         {
@@ -101,11 +102,21 @@ private:
 
     // Map to track active token requests and their states
     std::unordered_map<std::string, std::shared_ptr<TokenRequestState>> active_requests;
-    std::mutex active_requests_mutex;
+    //std::mutex active_requests_mutex;
 
 public:
+    // Function to get the fd from filename
+int GetFdFromFilename(const std::string& filename, const std::unordered_map<int, std::string>& fd_to_filename) {
+    // Iterate over the map to find the matching filename
+    for (const auto& pair : fd_to_filename) {
+        if (pair.second == filename) {
+            return pair.first; // Return the file descriptor if found
+        }
+    }
+    return -1; // Return -1 if the filename is not found
+}
      void PrintAllTokens(const std::string &filename) {
-        std::lock_guard<std::mutex> lock(token_mutex);
+        //std::lock_guard<std::mutex> lock(token_mutex);
         
         if (file_tokens.empty()) {
             std::cout << "\n=== No active tokens ===\n" << std::endl;
@@ -140,7 +151,8 @@ public:
                           const RegisterClientRequest *request,
                           RegisterClientResponse *response) override
     {
-        std::lock_guard<std::mutex> lock(clients_mutex);
+        //std::lock_guard<std::mutex> lock(global_mutex);
+        std::lock_guard<std::mutex> lock(global_mutex);
 
         std::int32_t client_id = next_client_id++;
 
@@ -161,7 +173,8 @@ public:
                         const GetAllTokensRequest *request,
                         GetAllTokensResponse *response) override
     {
-        std::lock_guard<std::mutex> lock(token_mutex); // Ensure thread safety
+        //std::lock_guard<std::mutex> lock(token_mutex); // Ensure thread safety
+        std::lock_guard<std::mutex> lock(global_mutex);
         std::cout<<"its on the server side"<<std::endl;
         for (const auto &[filename, tokens] : file_tokens)
         {
@@ -169,7 +182,7 @@ public:
             {
                 pfs::TokenRequest *token_info = response->add_tokens();
                 token_info->set_client_id(token.client_id);
-                token_info->set_file_descriptor(filename_to_fd[filename]);
+                token_info->set_file_descriptor(GetFdFromFilename(filename,fd_to_filename));
                 token_info->set_start_offset(token.start_offset);
                 token_info->set_end_offset(token.end_offset);
                 token_info->set_is_write(token.is_write);
@@ -182,6 +195,7 @@ public:
                         const TokenRequest *request,
                         TokenResponse *response) override
     {
+        std::lock_guard<std::mutex> lock(global_mutex);
         DEBUG_LOG("Token request received. Client ID: " + std::to_string(request->client_id()) +
               ", File Descriptor: " + std::to_string(request->file_descriptor()) +
               ", Start Offset: " + std::to_string(request->start_offset()) +
@@ -211,6 +225,7 @@ public:
     }
 
     Status InvalidateCache(grpc::ServerContext *context, const CacheRequest *request,  CacheResponse *response) override{
+        std::lock_guard<std::mutex> lock(global_mutex);
           DEBUG_LOG("Invalidation request received. Client ID: " + std::to_string(request->client_id()) +
               ", Filename: " + request->filename() + ", Block Number: " + std::to_string(request->block_num()));
         std::int32_t client_id = request->client_id();
@@ -221,7 +236,7 @@ public:
         auto request_state = std::make_shared<TokenRequestState>();
 
         {
-            std::lock_guard<std::mutex> lock(active_requests_mutex);
+            //std::lock_guard<std::mutex> lock(active_requests_mutex);
             active_requests[request_id] = request_state;
         }
         //  std::int32_t client_id = request.client_id();
@@ -237,7 +252,7 @@ public:
 
         StreamResponse invalidate_msg;
         invalidate_msg.set_action("invalidate");
-        invalidate_msg.set_file_descriptor(filename_to_fd[filename]);
+        invalidate_msg.set_file_descriptor(GetFdFromFilename(filename,fd_to_filename));
         invalidate_msg.set_filename(filename);
         invalidate_msg.set_invalidate(true);
         invalidate_msg.set_request_id(request_id);
@@ -266,7 +281,7 @@ public:
             std::cout << "Key not found: " << key_to_remove << std::endl;
         }
         {
-            std::lock_guard<std::mutex> lock(active_requests_mutex);
+            //std::lock_guard<std::mutex> lock(active_requests_mutex);
             active_requests.erase(request_id);
         }
 
@@ -278,6 +293,7 @@ public:
     Status ClientStream(ServerContext *context,
                         grpc::ServerReaderWriter<StreamResponse, StreamRequest> *stream) override
     {
+        //std::lock_guard<std::mutex> lock(global_mutex);
         StreamRequest request;
         if (!stream->Read(&request))
         {
@@ -286,7 +302,7 @@ public:
         }
         std::int32_t client_id = request.client_id();
         {
-            std::lock_guard<std::mutex> lock(clients_mutex);
+            //std::lock_guard<std::mutex> lock(clients_mutex);
             auto client_it = connected_clients.find(client_id);
             if (client_it != connected_clients.end())
             {
@@ -302,7 +318,7 @@ public:
             // std::lock_guard<std::mutex> stream_lock(client_it->second.stream_mutex);
             // client_it->second.stream = stream;
             // client_it->second.is_connected = true;
-            // client_it->second.last_active = std::time(nullptr);
+            // client_it->second.last_active =  std::chrono::steady_clock::now();
         }
         // std::cout << "Waiting for the request from the client" << std::endl;
         // std::atomic<bool> waiting_for_ack{false};
@@ -314,7 +330,7 @@ public:
                 std::shared_ptr<TokenRequestState> request_state;
 
                 {
-                    std::lock_guard<std::mutex> lock(active_requests_mutex);
+                    //std::lock_guard<std::mutex> lock(active_requests_mutex);
                     auto it = active_requests.find(request_id);
                     if (it != active_requests.end())
                     {
@@ -358,11 +374,11 @@ public:
             // }
 
             {
-                std::lock_guard<std::mutex> lock(clients_mutex);
+                //std::lock_guard<std::mutex> lock(clients_mutex);
                 auto client_it = connected_clients.find(request.client_id());
                 if (client_it != connected_clients.end())
                 {
-                    client_it->second.last_active = std::time(nullptr);
+                    client_it->second.last_active =  std::chrono::steady_clock::now();
                 }
             }
             // std::cout << "Server got request from the client with client id " << request.client_id() <<" and calls handletoken to grant the token"<< std::endl;
@@ -378,11 +394,11 @@ public:
         }
 
         {
-            std::lock_guard<std::mutex> lock(clients_mutex);
+            //std::lock_guard<std::mutex> lock(clients_mutex);
             auto client_it = connected_clients.find(client_id);
             if (client_it != connected_clients.end())
             {
-                std::lock_guard<std::mutex> stream_lock(client_it->second.stream_mutex);
+                //std::lock_guard<std::mutex> stream_lock(client_it->second.stream_mutex);
                 client_it->second.stream = nullptr;
                 client_it->second.is_connected = false;
             }
@@ -395,10 +411,99 @@ private:
     {
         std::vector<int32_t> cacheable_blocks;
         auto &file_map = file_block_tokens[filename];
-        int32_t start_block = start / PFS_BLOCK_SIZE;
-        int32_t end_block = end / PFS_BLOCK_SIZE;
+        int32_t start_block = (start) / PFS_BLOCK_SIZE;
+        int32_t end_block = (end / PFS_BLOCK_SIZE);
+        if(start_block==end_block){
+            int block_num = start_block;
+             auto &block_info = file_map.blocks[block_num];
+            block_info.block_number = block_num;
 
-        for (int32_t block_num = start_block; block_num <= end_block; block_num++)
+            if (is_write)
+            {
+                block_info.num_write_tokens++;
+                block_info.clients_with_write_tokens.insert(client_id);
+                block_info.is_cacheable = true;
+            }
+            else
+            {
+                block_info.num_read_tokens++;
+                if (block_info.num_write_tokens == 0)
+                {
+                    block_info.is_cacheable = true;
+                    block_info.clients_caching_block.insert(client_id);
+                    cacheable_blocks.push_back(block_num);
+                }
+            }
+        }
+                if(start_block==end_block){
+                    int block_num=start_block;
+                      auto &block_info = file_map.blocks[block_num];
+            block_info.block_number = block_num;
+
+            if (is_write)
+            {
+                block_info.num_write_tokens++;
+                block_info.clients_with_write_tokens.insert(client_id);
+                block_info.is_cacheable = true;
+            }
+            else
+            {
+                block_info.num_read_tokens++;
+                if (block_info.num_write_tokens == 0)
+                {
+                    block_info.is_cacheable = true;
+                    block_info.clients_caching_block.insert(client_id);
+                    cacheable_blocks.push_back(block_num);
+                }
+            }
+                }
+        if(start_block==end_block){
+                    int block_num=start_block;
+                     auto &block_info = file_map.blocks[block_num];
+            block_info.block_number = block_num;
+
+            if (is_write)
+            {
+                block_info.num_write_tokens++;
+                block_info.clients_with_write_tokens.insert(client_id);
+                block_info.is_cacheable = true;
+            }
+            else
+            {
+                block_info.num_read_tokens++;
+                if (block_info.num_write_tokens == 0)
+                {
+                    block_info.is_cacheable = true;
+                    block_info.clients_caching_block.insert(client_id);
+                    cacheable_blocks.push_back(block_num);
+                }
+            }
+        
+        }
+        if(start_block==end_block){
+            int block_num = start_block;
+            auto &block_info = file_map.blocks[block_num];
+            block_info.block_number = block_num;
+
+            if (is_write)
+            {
+                block_info.num_write_tokens++;
+                block_info.clients_with_write_tokens.insert(client_id);
+                block_info.is_cacheable = true;
+            }
+            else
+            {
+                block_info.num_read_tokens++;
+                if (block_info.num_write_tokens == 0)
+                {
+                    block_info.is_cacheable = true;
+                    block_info.clients_caching_block.insert(client_id);
+                    cacheable_blocks.push_back(block_num);
+                }
+            }
+        }
+         
+        for (int32_t block_num = start_block; block_num < end_block; block_num++)
         {
             auto &block_info = file_map.blocks[block_num];
             block_info.block_number = block_num;
@@ -423,18 +528,14 @@ private:
 
         return cacheable_blocks;
     }
-    std::string getTheFileName(int32_t fd)
-    {
-        for (const auto &pair : filename_to_fd)
-        {
-            if (pair.second == fd)
-                return pair.first;
-        }
-        return NULL;
-    }
+   std::string getTheFileName(int32_t fd)
+{   std::cout<<"In the getTheFileName the filename retrieved is "<<fd_to_filename[fd]<<std::endl;
+    return fd_to_filename[fd];
+}
 
     std::string GenerateRequestId(const std::string &filename, off_t start, off_t end, std::int32_t client_id)
     {
+        std::cout<<"Its inside the generate request id function "<<std::endl;
         return filename + ":" + std::to_string(start) + ":" + std::to_string(end) + ":" + std::to_string(client_id) + ":" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
     }
 
@@ -448,13 +549,14 @@ private:
               << ", start=" << start << ", end=" << end << ", is_write=" << is_write << std::endl;
 
         {
-            std::lock_guard<std::mutex> lock(active_requests_mutex);
+            //std::lock_guard<std::mutex> lock(active_requests_mutex);
+            std::cout<<"Initializing active requests"<<std::endl;
             active_requests[request_id] = request_state;
         }
         auto &tokens = file_tokens[filename];
         std::vector<TokenRange> conflicting_tokens;
          {
-            std::lock_guard<std::mutex> lock(clients_mutex);
+            //std::lock_guard<std::mutex> lock(token_mutex);
             std::cout << "Checking for conflicts in tokens for filename: " << filename << std::endl;
 
             // Check for conflicts
@@ -479,19 +581,20 @@ private:
             std::cout<<"Token added on the server side from the offset "<<start<<" to "<<end<<"with the token "<<is_write<<std::endl;
             tokens.push_back(new_token);
             if(is_write){
-                int32_t start_block = start / PFS_BLOCK_SIZE;
-                int32_t end_block = end / PFS_BLOCK_SIZE;
+                int32_t start_block = (start) / PFS_BLOCK_SIZE;
+                int32_t end_block = (end / PFS_BLOCK_SIZE);
                 auto &file_map = file_block_tokens[filename];
 
                  std::cout << "Writing to blocks between " << start_block << " and " << end_block << std::endl;
-                for (int32_t block_num = start_block; block_num <= end_block; block_num++)
-                {
+                 if(start_block==end_block){
+            int block_num = start_block;
+            
                     auto &block_info = file_map.blocks[block_num];
 
                     if(block_info.clients_with_write_tokens.size()>1 || block_info.clients_caching_block.size()){
                         StreamResponse invalidate_msg;
                         invalidate_msg.set_action("invalidate");
-                        invalidate_msg.set_file_descriptor(filename_to_fd[filename]);
+                        invalidate_msg.set_file_descriptor(GetFdFromFilename(filename,fd_to_filename));
                         invalidate_msg.set_filename(filename);
                         invalidate_msg.set_invalidate(true);
                         invalidate_msg.set_request_id(request_id);
@@ -526,11 +629,66 @@ private:
                         {
                             std::unique_lock<std::mutex> lock(request_state->mutex);
                             request_state->cv_invalidate.wait(lock, [&request_state]()
-                                                              {std::cout<<"got the signal and cv is released in the invalidate ack"<<std::endl; return request_state->invalidate_acks_received; });
+                                                              { return request_state->invalidate_acks_received; });
+                            std::cout<<"got the signal and cv is released in the invalidate ack"<<std::endl;                                  
                         }
 
                         {
-                            std::lock_guard<std::mutex> lock(active_requests_mutex);
+                            // std::lock_guard<std::mutex> lock(active_requests_mutex);
+                            active_requests.erase(request_id);
+                        }
+                    }
+                     block_info.clients_caching_block.clear();
+         
+         }
+                for (int32_t block_num = start_block; block_num < end_block; block_num++)
+                {
+                    auto &block_info = file_map.blocks[block_num];
+
+                    if(block_info.clients_with_write_tokens.size()>1 || block_info.clients_caching_block.size()){
+                        StreamResponse invalidate_msg;
+                        invalidate_msg.set_action("invalidate");
+                        invalidate_msg.set_file_descriptor(GetFdFromFilename(filename,fd_to_filename));
+                        invalidate_msg.set_filename(filename);
+                        invalidate_msg.set_invalidate(true);
+                        invalidate_msg.set_request_id(request_id);
+                        invalidate_msg.add_invalidate_blocks(block_num);
+                        invalidate_msg.set_client_id(client_id);
+                        invalidate_msg.set_mode(is_write);
+
+                        std::cout << "Sending invalidate message for block " << block_num << std::endl;
+
+                        for (int32_t client_id1 : block_info.clients_caching_block)
+                        {
+                            if(client_id1 == client_id){
+                                continue;
+                            }
+                            auto client_it = connected_clients.find(client_id1);
+                            if (client_it != connected_clients.end())
+                            {
+                                client_it->second.stream->Write(invalidate_msg);
+                                std::cout << "Invalidate message sent to client_id: " << client_id1 << std::endl;
+                            }
+                        }
+                        if (block_info.clients_with_write_tokens.size())
+                        {
+                            int32_t client_id = *block_info.clients_caching_block.begin();
+                            auto client_it = connected_clients.find(client_id);
+                            if (client_it != connected_clients.end())
+                            {
+                                client_it->second.stream->Write(invalidate_msg);
+                                std::cout << "Invalidate message sent to client_id: " << client_id << std::endl;
+                            }
+                        }
+                        {
+                            std::unique_lock<std::mutex> lock(request_state->mutex);
+                            request_state->cv_invalidate.wait(lock, [&request_state]()
+                                                              { return request_state->invalidate_acks_received; });
+                            std::cout<<"got the signal and cv is released in the invalidate ack"<<std::endl;                                  
+                        }
+
+                        {
+                            // std::lock_guard<std::mutex> lock(active_requests_mutex);
                             active_requests.erase(request_id);
                         }
                     }
@@ -541,7 +699,7 @@ private:
 
             StreamResponse response;
             response.set_action("grant");
-            response.set_file_descriptor(filename_to_fd[filename]);
+            response.set_file_descriptor(GetFdFromFilename(filename,fd_to_filename));
             response.set_filename(filename);
             response.set_start_offset(start);
             response.set_end_offset(end);
@@ -564,9 +722,15 @@ private:
             }
             if(is_write){
                 auto &file_map = file_block_tokens[filename];
-                int32_t start_block = start / PFS_BLOCK_SIZE;
-                int32_t end_block = end / PFS_BLOCK_SIZE;
-                for (int32_t block_num = start_block; block_num <= end_block; block_num++){
+                int32_t start_block = (start) / PFS_BLOCK_SIZE;
+                int32_t end_block = (end / PFS_BLOCK_SIZE);
+                 if(start_block==end_block){
+            int block_num = start_block;
+                  auto& block_info = file_map.blocks[block_num];
+                      block_info.write_block_cached_client[block_num] = client_id;
+                       std::cout << "Updated block " << block_num << " with write cache client " << client_id << std::endl;
+                 }
+                for (int32_t block_num = start_block; block_num < end_block; block_num++){
                       auto& block_info = file_map.blocks[block_num];
                       block_info.write_block_cached_client[block_num] = client_id;
                        std::cout << "Updated block " << block_num << " with write cache client " << client_id << std::endl;
@@ -575,7 +739,7 @@ private:
             PrintAllTokens(filename); 
             // Clean up request state
             {
-                std::lock_guard<std::mutex> lock(active_requests_mutex);
+                //std::lock_guard<std::mutex> lock(active_requests_mutex);
                 active_requests.erase(request_id);
             }
         }
@@ -592,12 +756,21 @@ private:
     {
         auto& file_map = file_block_tokens[filename];
         auto& all_tokens = file_tokens[filename];
-        int32_t start_block = start / PFS_BLOCK_SIZE;
-        int32_t end_block = end / PFS_BLOCK_SIZE;
+        int32_t start_block = (start) / PFS_BLOCK_SIZE;
+        int32_t end_block =(end / PFS_BLOCK_SIZE);
 
          std::cout << "Removing block tokens from " << start_block << " to " << end_block << " for filename: " << filename << std::endl;
-        
-        for (int32_t block_num = start_block; block_num <= end_block; block_num++) {
+         if(start_block==end_block){
+            int block_num = start_block;
+         auto& block_info = file_map.blocks[block_num];
+            block_info.num_read_tokens = 0;
+            block_info.num_write_tokens = 0;
+            block_info.clients_with_write_tokens.clear();
+             std::cout << "Cleared block_info for block_num: " << block_num << std::endl;
+           // block_info.clients_caching_block.clear(); 
+            // block_info.is_cacheable = false;
+         }
+        for (int32_t block_num = start_block; block_num < end_block; block_num++) {
             auto& block_info = file_map.blocks[block_num];
             block_info.num_read_tokens = 0;
             block_info.num_write_tokens = 0;
@@ -609,7 +782,7 @@ private:
 
         for (const auto& token : all_tokens) {
             int32_t token_start_block = token.start_offset / PFS_BLOCK_SIZE;
-            int32_t token_end_block = token.end_offset / PFS_BLOCK_SIZE;
+            int32_t token_end_block = (token.end_offset+1) / PFS_BLOCK_SIZE;
             for (int32_t block_num = token_start_block; block_num <= token_end_block; block_num++) {
                 if (block_num >= start_block && block_num <= end_block) {  
                     auto& block_info = file_map.blocks[block_num];
@@ -673,7 +846,7 @@ private:
         for (const auto& token : conflicting_tokens) {
             StreamResponse invalidate_msg;
             invalidate_msg.set_action("invalidate");
-            invalidate_msg.set_file_descriptor(filename_to_fd[filename]);
+            invalidate_msg.set_file_descriptor(GetFdFromFilename(filename,fd_to_filename));
             invalidate_msg.set_filename(filename);
             invalidate_msg.set_start_offset(start);
             invalidate_msg.set_end_offset(end);
@@ -681,9 +854,10 @@ private:
             invalidate_msg.set_invalidate(false);
             invalidate_msg.set_client_id(requesting_client_id);
             invalidate_msg.set_mode(is_write);
-            int32_t start_block = start / PFS_BLOCK_SIZE;
-            int32_t end_block = end / PFS_BLOCK_SIZE;
-            for (int32_t block_num = start_block; block_num <= end_block; block_num++)
+            int32_t start_block = (start) / PFS_BLOCK_SIZE;
+            int32_t end_block = (end / PFS_BLOCK_SIZE);
+            if(start_block==end_block) invalidate_msg.add_invalidate_blocks(start_block);
+            for (int32_t block_num = start_block; block_num < end_block; block_num++)
             {
                 invalidate_msg.add_invalidate_blocks(block_num);
             }
@@ -712,7 +886,7 @@ private:
 
         StreamResponse grant_msg;
         grant_msg.set_action("grant");
-        grant_msg.set_file_descriptor(filename_to_fd[filename]);
+        grant_msg.set_file_descriptor(GetFdFromFilename(filename,fd_to_filename));
         grant_msg.set_filename(filename);
         grant_msg.set_start_offset(start);
         grant_msg.set_end_offset(end);
@@ -737,7 +911,7 @@ private:
         PrintAllTokens(filename); 
         // Clean up request state
         {
-            std::lock_guard<std::mutex> lock(active_requests_mutex);
+            //std::lock_guard<std::mutex> lock(active_requests_mutex);
             active_requests.erase(request_id);
             std::cout << "Request state cleaned up for request: " << request_id << std::endl;
         }
@@ -754,7 +928,7 @@ private:
               << ", end=" << token.end_offset 
               << std::endl;
         // Protect file_tokens if accessed concurrently
-        std::lock_guard<std::mutex> lock(clients_mutex);
+        //std::lock_guard<std::mutex> lock(clients_mutex);
         auto &tokens = file_tokens[token.filename];
 
         auto it = std::find_if(tokens.begin(), tokens.end(),
@@ -813,7 +987,7 @@ private:
     //     {
     //         return false;
     //     }
-    //     return (std::time(nullptr) - it->second.last_active) < CLIENT_TIMEOUT;
+    //     return ( std::chrono::steady_clock::now() - it->second.last_active) < CLIENT_TIMEOUT;
     // }
     Status CheckAliveMetaServer(ServerContext *context, const AliveRequestMeta *request,
                                 AliveResponseMeta *response) override
@@ -826,14 +1000,15 @@ private:
     Status CreateFile(ServerContext *context, const CreateFileRequest *request,
                       CreateFileResponse *response) override
     {
+        std::lock_guard<std::mutex> lock(global_mutex);
          DEBUG_LOG("Received CreateFile request for filename: " + request->filename());
         std::string filename = request->filename();
         std::int32_t stripe_width = request->stripe_width();
         std::cout << "Its here in the server side create file " << std::endl;
         // Check if the file already exists
-        if (!filename_to_fd.empty() && filename_to_fd.find(filename) != filename_to_fd.end())
+        if (metadata_store.find(filename) != metadata_store.end())
         {
-              DEBUG_LOG("File already exists: " + filename);
+            DEBUG_LOG("File already exists: " + filename);
             response->set_success(false);
             response->set_error_message("File already exists.");
             return Status::OK;
@@ -851,9 +1026,9 @@ private:
         FileMetadata meta_data;
         meta_data.filename = filename;
         meta_data.file_size = 0;
-        meta_data.creation_time = std::time(nullptr);
-        meta_data.fd = -1;
-        meta_data.file_mode = 0;
+        meta_data.creation_time =  time(nullptr);
+        // meta_data.fd = -1;
+        // meta_data.file_mode = 0;
         meta_data.stripe_width = stripe_width;
 
         // Store metadata and generate file descriptor
@@ -870,6 +1045,7 @@ private:
     Status OpenFile(ServerContext *context, const OpenFileRequest *request,
                     OpenFileResponse *response) override
     {
+        std::lock_guard<std::mutex> lock(global_mutex);
         std::string filename = request->filename();
         std::int32_t mode = request->mode();
 
@@ -884,8 +1060,8 @@ private:
 
         // Step 3: Assign a new file descriptor
         std::int32_t fd = next_fd++;
-        metadata_store[filename].fd = fd;
-        metadata_store[filename].file_mode = mode;
+        // metadata_store[filename].fd = fd;
+        // metadata_store[filename].file_mode = mode;
         //std::int32_t fd = filename_to_fd[filename];
         file_descriptors[fd] = mode;
         // exec_stats.num_open_files++;
@@ -902,6 +1078,7 @@ private:
     Status FetchMetadata(ServerContext *context, const FetchMetadataRequest *request,
                          FetchMetadataResponse *response) override
     {
+        std::lock_guard<std::mutex> lock(global_mutex);
         std::int32_t fd = request->file_descriptor();
 
         // Validate the file descriptor
@@ -939,6 +1116,7 @@ private:
     Status UpdateMetadata(ServerContext *context, const UpdateMetadataRequest *request,
                           UpdateMetadataResponse *response) override
     {
+        std::lock_guard<std::mutex> lock(global_mutex);
         std::int32_t fd = request->file_descriptor();
         std::int32_t new_file_size = request->new_file_size();
         //std::int32_t modification_time = request->modification_time();
@@ -974,27 +1152,43 @@ private:
     Status DeleteFile(ServerContext *context, const DeleteFileRequest *request,
                       DeleteFileResponse *response) override
     {
-        std::string filename = request->filename();
+        std::lock_guard<std::mutex> lock(global_mutex);
+         std::string filename = request->filename();
 
-        // Check if the file exists
-        if (filename_to_fd.find(filename) == filename_to_fd.end())
-        {
+        // Check if the file exists in the metadata_store
+        auto it = metadata_store.find(filename);
+        if (it == metadata_store.end()) {
             response->set_success(false);
             response->set_error_message("File not found.");
-            return Status::OK;
+            std::cerr << "DeleteFile: File '" << filename << "' not found" << std::endl;
+            return grpc::Status::OK;
         }
 
-        std::int32_t fd = filename_to_fd[filename];
-        // metadata_store.erase(fd);
-        filename_to_fd.erase(filename);
-        file_descriptors.erase(fd);
+        // Retrieve the file descriptor
+        // std::int32_t fd = it->second.fd; // Assuming metadata_store maps filename to a struct containing fd
+        int32_t stripe_width = it->second.stripe_width;
+        // Remove the file metadata
+        metadata_store.erase(it);           // Erase from metadata_store
+        filename_to_fd.erase(filename);    // Erase filename-to-fd mapping
+
+        // Remove the fd-to-filename mapping if the value matches the filename
+        for (auto fd_it = fd_to_filename.begin(); fd_it != fd_to_filename.end(); ++fd_it) {
+            if (fd_it->second == filename) {
+                fd_to_filename.erase(fd_it); // Erase the matching pair
+                //break; // Exit the loop once the mapping is removed
+            }
+        }
+
         response->set_success(true);
-        return Status::OK;
+        response->set_stripe_width(stripe_width);
+        std::cout << "DeleteFile: File '" << filename << "' successfully deleted" << std::endl;
+        return grpc::Status::OK;
     }
 
    Status CloseFile(ServerContext *context, const CloseFileRequest *request, CloseFileResponse *response) override
 {
-    std::lock_guard<std::mutex> metadata_lock(metadata_mutex);
+    std::lock_guard<std::mutex> lock(global_mutex);
+    //std::lock_guard<std::mutex> metadata_lock(metadata_mutex);
 
     int32_t fd = request->file_descriptor();
     int32_t client_id = request->client_id();
@@ -1020,7 +1214,7 @@ private:
     DEBUG_LOG("Erased file descriptor and associated data.");
 
     {
-        std::lock_guard<std::mutex> lock(token_mutex);
+        //std::lock_guard<std::mutex> lock(token_mutex);
         auto &tokens = file_tokens[filename];
         DEBUG_LOG("Cleaning tokens for filename: " + filename + ", Number of tokens before cleanup: " + std::to_string(tokens.size()));
 

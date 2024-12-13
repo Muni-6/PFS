@@ -31,6 +31,7 @@ private:
         CacheBlock() : is_dirty(false), block_number(-1), last_access(0) {}
     };
 
+struct pfs_execstat& global_cache_stat;
     size_t max_blocks; // Maximum number of cache blocks allowed
     std::unordered_map<std::string, std::unordered_map<int32_t, CacheBlock>> cache; // Cache data structure
     std::mutex cache_mutex; // Mutex for thread safety
@@ -40,7 +41,7 @@ private:
     void writeBackBlock(const std::string& filename, int32_t block_num, const void* data, size_t size);
 
 public:
-    explicit PFSCache(size_t max_cache_blocks);
+    explicit  PFSCache(size_t max_cache_blocks, struct pfs_execstat& global_cache_stat);
 
     bool isBlockCached(const std::string& filename, int32_t block_num);
     int readFromCache(const std::string& filename, int32_t block_num, void* buf, size_t block_offset, size_t bytes_to_read);

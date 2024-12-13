@@ -1,0 +1,29 @@
+Bidirectional Streaming for Revoke and Invalidate Requests
+In a distributed parallel file system, maintaining sequential consistency across multiple clients is critical. To ensure this, the metadata server must be able to notify clients of token revocation or cache invalidation requests when overlapping tokens are required by other clients. This is achieved through bidirectional streaming between the metadata server and each client.
+Design Overview
+Each client, apart from handling its own operations (e.g., pfs_read, pfs_write), must also be equipped to handle incoming requests from the metadata server for Token Revocation and Cache Invalidation.
+To handle these requests, a dedicated thread is launched on each client. This thread uses bidirectional streaming with the metadata server, staying active throughout the client's lifecycle. The thread ensures that the client:
+Listens to incoming messages from the metadata server.
+Processes the requests for revocation or invalidation.
+Sends acknowledgments or responses back through the stream.
+The thread is gracefully terminated when pfs_finish() is called.
+Why Bidirectional Streaming?
+The client does not have a separate proto definition to expose a server-like interface. This means the metadata server cannot directly invoke RPCs on the client. Instead, bidirectional streaming is used as a mechanism for:
+The metadata server to "push" messages to the client.
+The client to "pull" messages from the stream, process them, and send responses back.
+This approach allows for asynchronous communication between the client and the metadata server while keeping the stream alive throughout the client's lifecycle.
+Metaserver Data Structures
+The metaserver stores file metadata such as the filename, file size, creation time, last close time, and a file recipe that describes how the file is striped across file servers. In addition, it tracks tokens and block states. Tokens are stored in a map std::unordered_map<std::string, std::vector<Token>>.
+Block State: Each file's block state is stored using the following structure:
+ struct Block {
+   int read_tokens = 0; // Number of active read tokens.
+   int write_tokens = 0; // Number of active write tokens.
+   std::unordered_set<int> inCache; // Set of clients caching the block.
+}; This structure comes very handy to handle conflicting tokens, knowing the cached clients. 
+The blocksMap structure is a nested map: std::unordered_map<std::string, std::unordered_map<int, Block>>, which maps a filename to its blocks and their corresponding state.
+For read requests, the metaserver uses blocksMap to check if any blocks have active write tokens. If so, it sends write-back notifications to the clients caching those blocks. After resolving conflicts, the metaserver grants the read token, allowing the client to access the data.
+For write requests, the metaserver checks inCache to identify which clients have cached copies of the block. It sends invalidation requests to all affected clients, ensuring no stale data remains. Once acknowledgments are received, the write token is granted.
+During the RequestToken process, the metaserver determines whether a client can cache specific blocks and communicates this decision through the cached_blocks field in the response.
+The metaserver uses a condition variable to handle invalidation and revocation requests. It waits on the condition variable until all affected clients send their acknowledgments. Once all acknowledgments are received, the condition variable notifies the metaserver to proceed.
+Handling of multiple clients overlapping requestTokens: To handle sequential revocation requests efficiently, we implemented a design where each token has an associated mutex and condition variable. When Client C2 requests a token revocation while Client C1 holds it, any subsequent overlapping request with C2 from Client C3 will wait on C2's token. Once C2's revocation completes and the token is updated, C2 notifies the waiting condition variable, waking up C3 to proceed. This design ensures proper sequencing and avoids redundant operations, scaling effectively for any number of clients.
+How we handled revocation requests when itself is still writing to the disk. For this it 
