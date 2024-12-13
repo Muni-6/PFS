@@ -9,18 +9,6 @@
 #include "pfs_common/pfs_common.hpp"
 #include "pfs_client/pfs_api.hpp"
 
-int pfs_print_meta(int pfs_fd, int client_id) {
-    struct pfs_metadata mymeta = {0};
-    int ret = pfs_fstat(pfs_fd, &mymeta);
-    if (ret != -1) {
-        printf("%s: PFS fd: %d, Client id: %d\n", __func__, pfs_fd, client_id);
-        printf("%s: File name: %s, size: %lu\n", __func__, mymeta.filename, mymeta.file_size);
-        printf("%s: Time of creation: %s", __func__, ctime(&(mymeta.ctime)));
-        printf("%s: Last modification: %s", __func__, ctime(&(mymeta.mtime)));
-    }
-    return ret;
-}
-
 int pfs_print_stat(int client_id) {
     struct pfs_execstat mystat = {0};
     int ret = pfs_execstat(&mystat);
@@ -78,14 +66,6 @@ int main(int argc, char *argv[]) {
     char *pfs_buf = (char *)malloc(pfs_buf_size);
     memset(pfs_buf, 0, pfs_buf_size);
     ret = pfs_read(pfs_fd, (void *)pfs_buf, 4096, 0);
-
-    printf("===========================\n");
-    // Print metadata
-    if (pfs_print_meta(pfs_fd, client_id) == -1) {
-        fprintf(stderr, "PFS metadata print error.\n");
-        return -1;
-    };
-    printf("===========================\n");
 
     // Close and delete the pfs_file1
     if (pfs_close(pfs_fd) == -1) {
