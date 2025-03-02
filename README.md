@@ -3,9 +3,6 @@
 ## Summary
 The main goal of this project is to implement a simple **Parallel File System (PFS)** across multiple servers using **gRPC** as the communication mechanism.
 
-## Deadline
-**December 12th, 2024, 11:59 PM**
-
 ## Overview
 The project involves multiple C++ programs where each program (client) may run on different physical machines and perform read/write operations to files using the parallel file system (PFS). The PFS ensures synchronization of operations across multiple clients while providing **sequential consistency**. The file data will be stored on **file servers**, with each server holding portions of a file in a **striped** manner.
 
@@ -141,5 +138,4 @@ This project implements a **Parallel File System** with:
 - **Metadata and File Servers**
 - **Client-side caching and consistency mechanisms**
 
-For more details, refer to **pfs_api.hpp** and **pfs_config.hpp**. 🚀
 
